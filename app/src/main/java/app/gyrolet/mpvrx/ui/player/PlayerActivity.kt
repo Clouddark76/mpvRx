@@ -1511,14 +1511,13 @@ class PlayerActivity :
       val fontsFolderPath = subtitlesPreferences.fontsFolder.get()
       if (fontsFolderPath.isBlank()) return
 
+      val fontsDir = File(fontsFolderPath)
+      if (!fontsDir.exists() || !fontsDir.isDirectory || !fontsDir.canRead()) return
+
       val destinationDir = File(filesDir, "fonts").also { it.mkdirs() }
       destinationDir.listFiles()?.filter { it.isDirectory }?.forEach { it.deleteRecursively() }
-
-      val fontsDir = File(fontsFolderPath)
-      if (fontsDir.exists() && fontsDir.isDirectory && fontsDir.canRead()) {
-          syncFontDirectoryFromFile(fontsDir, destinationDir)
-          return
-      }
+      syncFontDirectoryFromFile(fontsDir, destinationDir)
+  }
 
       // Fallback SAF — reemplaza la llamada a syncFontDirectory() eliminada
       runCatching {
