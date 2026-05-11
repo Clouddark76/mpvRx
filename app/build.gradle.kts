@@ -188,7 +188,7 @@ tasks.register("downloadMpvAar") {
     println("[MPV] Buscando latest release...")
 
     val jsonText = URL(
-      "https://api.github.com/repos/Clouddark76/mpvlibAndroid/releases/latest"
+      "https://api.github.com/repos/Clouddark75/mpvlibAndroid/releases/latest"
     ).readText()
 
     val json = JsonSlurper().parseText(jsonText) as Map<*, *>
