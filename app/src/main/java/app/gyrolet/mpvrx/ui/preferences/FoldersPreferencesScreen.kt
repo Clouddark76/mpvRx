@@ -51,6 +51,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import android.provider.DocumentsContract
+import android.os.Environment
 import app.gyrolet.mpvrx.R
 import app.gyrolet.mpvrx.domain.media.model.VideoFolder
 import app.gyrolet.mpvrx.preferences.AdvancedPreferences
@@ -84,22 +86,60 @@ object FoldersPreferencesScreen : Screen {
     val baseStorageFolder by preferences.baseStorageFolder.collectAsState()
 
     val storageRootPicker = rememberLauncherForActivityResult(
-      ActivityResultContracts.OpenDocumentTree(),
+        ActivityResultContracts.OpenDocumentTree(),
     ) { uri: Uri? ->
-      if (uri == null) return@rememberLauncherForActivityResult
-      context.contentResolver.takePersistableUriPermission(
-        uri,
-        Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
-      )
-      val uriString = uri.toString()
-      preferences.baseStorageFolder.set(uriString)
-      advancedPreferences.mpvConfStorageUri.set(uriString)
-      subtitlesPreferences.subtitleSaveFolder.set(uriString)
-      subtitlesPreferences.fontsFolder.set(uriString)
-      val root = DocumentFile.fromTreeUri(context, uri) ?: return@rememberLauncherForActivityResult
-      listOf("fonts", "Subtitles", "scripts", "script-opts", "shaders").forEach { name ->
-        if (root.findFile(name) == null) root.createDirectory(name)
-      }
+        if (uri == null) return@rememberLauncherForActivityResult
+
+        // Extraer path real desde el URI SAF
+        val rawPath = try {
+            // El URI SAF tiene forma: content://com.android.externalstorage.documents/tree/primary%3AAlgunaCarpeta
+            // Uri.decode da: .../primary:AlgunaCarpeta
+            // Convertimos "primary:X" → "/storage/emulated/0/X"
+            //                "XXXX-XXXX:X" → "/storage/XXXX-XXXX/X"  (SD card)
+            val decoded = Uri.decode(uri.toString()).substringAfterLast(":")
+            val volumePart = Uri.decode(uri.toString())
+                .substringAfterLast("/tree/")
+                .substringBefore(":")
+                .lowercase()
+
+            if (volumePart == "primary") {
+                "${Environment.getExternalStorageDirectory().canonicalPath}/$decoded"
+            } else {
+                // Tarjeta SD u otro volumen
+                "/storage/$volumePart/$decoded"
+            }
+        } catch (e: Exception) {
+            // Fallback: intentar obtenerlo con ContentResolver
+            try {
+                val docId = DocumentsContract.getTreeDocumentId(uri)
+                val split = docId.split(":")
+                val type = split[0]
+                val relativePath = if (split.size > 1) split[1] else ""
+                if (type.equals("primary", ignoreCase = true)) {
+                    "${Environment.getExternalStorageDirectory().canonicalPath}/$relativePath"
+                } else {
+                    "/storage/$type/$relativePath"
+                }
+            } catch (e2: Exception) {
+                null
+            }
+        } ?: return@rememberLauncherForActivityResult
+
+        val rootDir = java.io.File(rawPath)
+        if (!rootDir.exists()) rootDir.mkdirs()
+
+        // Guardar como path de archivo, no como URI SAF
+        preferences.baseStorageFolder.set(rawPath)
+        advancedPreferences.mpvConfStorageUri.set(rawPath)
+        subtitlesPreferences.subtitleSaveFolder.set(rawPath)
+
+        // Crear subdirectorios estándar
+        listOf("fonts", "Subtitles", "scripts", "script-opts", "shaders").forEach { name ->
+            java.io.File(rootDir, name).mkdirs()
+        }
+
+        // fontsFolder apunta al subdirectorio fonts/, no a la raíz
+        subtitlesPreferences.fontsFolder.set("$rawPath/fonts")
     }
 
     val blacklistedFolders by preferences.blacklistedFolders.collectAsState()
