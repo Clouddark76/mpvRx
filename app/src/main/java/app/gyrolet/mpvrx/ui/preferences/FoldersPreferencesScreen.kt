@@ -575,7 +575,7 @@ private fun StorageRootPickerCard(
         Spacer(modifier = Modifier.height(2.dp))
         Text(
           text = if (currentPath.isNotEmpty())
-            getSimplifiedStoragePath(currentPath)
+            currentPath  // Ya es un path legible, mostrar directamente
           else
             "Tap to select — creates Subtitles/, Fonts/, scripts/ subdirs",
           style = MaterialTheme.typography.bodySmall,
@@ -595,12 +595,6 @@ private fun StorageRootPickerCard(
       }
     }
   }
-}
-
-private fun getSimplifiedStoragePath(uriString: String): String = try {
-  Uri.decode(uriString).substringAfterLast(':').ifEmpty { uriString }
-} catch (_: Exception) {
-  uriString
 }
 
 private suspend fun scanAllVideoFolders(context: Application): List<VideoFolder> =
