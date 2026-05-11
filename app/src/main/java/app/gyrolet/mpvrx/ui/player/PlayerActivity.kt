@@ -1519,23 +1519,6 @@ class PlayerActivity :
       syncFontDirectoryFromFile(fontsDir, destinationDir)
   }
 
-      // Fallback SAF — reemplaza la llamada a syncFontDirectory() eliminada
-      runCatching {
-          val uri = fontsFolderPath.toUri()
-          val tree = DocumentFile.fromTreeUri(this, uri) ?: return
-          val fontExtensions = setOf("ttf", "otf", "ttc", "woff", "woff2")
-          listTreeFilesSafely(tree).forEach { doc ->
-              if (!doc.isFile) return@forEach
-              val name = doc.name ?: return@forEach
-              if (name.substringAfterLast('.').lowercase() !in fontExtensions) return@forEach
-              val target = File(destinationDir, name)
-              copyDocumentToFileIfNeeded(doc, target)
-          }
-      }.onFailure { e ->
-          Log.e(TAG, "Failed to sync subtitle fonts via SAF fallback", e)
-      }
-  }
-
   /**
    * Copia recursivamente fuentes desde [sourceDir] (File) a [destinationDir].
    */
