@@ -69,9 +69,6 @@ import me.zhanghai.compose.preference.SwitchPreference
 import me.zhanghai.compose.preference.TwoTargetIconButtonPreference
 import org.koin.compose.koinInject
 import java.io.File
-import kotlin.io.path.deleteIfExists
-import kotlin.io.path.outputStream
-import kotlin.io.path.readLines
 
 @Serializable
 object AdvancedPreferencesScreen : Screen {
@@ -280,52 +277,42 @@ object AdvancedPreferencesScreen : Screen {
                   withContext(Dispatchers.IO) {
                       for (cfgName in listOf("mpv.conf", "input.conf")) {
                           runCatching {
+                              var content: String? = null
+
+                              // Intento 1: path de archivo directo
                               val rootDir = File(mpvConfStorageLocation)
-                              if (rootDir.exists() && rootDir.isDirectory) {
+                              if (rootDir.exists() && rootDir.isDirectory && rootDir.canRead()) {
                                   val file = rootDir.listFiles()?.firstOrNull {
                                       it.isFile && it.name.equals(cfgName, ignoreCase = true)
                                   }
                                   if (file != null && file.canRead()) {
-                                      val content = file.readText()
-                                      when (cfgName) {
-                                          "mpv.conf"   -> {
-                                              preferences.mpvConf.set(content)
-                                              File(context.filesDir, cfgName).writeText(content)
-                                              withContext(Dispatchers.Main) { mpvConf = content }
-                                          }
-                                          "input.conf" -> {
-                                              preferences.inputConf.set(content)
-                                              File(context.filesDir, cfgName).writeText(content)
-                                              withContext(Dispatchers.Main) { inputConf = content }
-                                          }
-                                      }
-                                      return@runCatching
+                                      content = file.readText()
                                   }
                               }
-                              // Fallback SAF para configs antiguas
-                              val tempFile = kotlin.io.path.createTempFile()
-                              runCatching {
+
+                              // Intento 2: fallback SAF
+                              if (content == null) {
                                   val tree = DocumentFile.fromTreeUri(context, mpvConfStorageLocation.toUri())
-                                  val configFile = tree?.findFile(cfgName)
-                                  if (configFile != null && configFile.exists()) {
-                                      context.contentResolver.openInputStream(configFile.uri)
-                                          ?.copyTo(tempFile.outputStream())
-                                      val content = tempFile.readLines().fastJoinToString("\n")
-                                      when (cfgName) {
-                                          "mpv.conf"   -> {
-                                              preferences.mpvConf.set(content)
-                                              File(context.filesDir, cfgName).writeText(content)
-                                              withContext(Dispatchers.Main) { mpvConf = content }
-                                          }
-                                          "input.conf" -> {
-                                              preferences.inputConf.set(content)
-                                              File(context.filesDir, cfgName).writeText(content)
-                                              withContext(Dispatchers.Main) { inputConf = content }
-                                          }
-                                      }
+                                  val doc = tree?.findFile(cfgName)
+                                  if (doc != null && doc.exists()) {
+                                      content = context.contentResolver
+                                          .openInputStream(doc.uri)?.bufferedReader()?.readText()
                                   }
                               }
-                              tempFile.deleteIfExists()
+
+                              content ?: return@runCatching
+
+                              File(context.filesDir, cfgName).writeText(content)
+                              when (cfgName) {
+                                  "mpv.conf"   -> {
+                                      preferences.mpvConf.set(content)
+                                      withContext(Dispatchers.Main) { mpvConf = content }
+                                  }
+                                  "input.conf" -> {
+                                      preferences.inputConf.set(content)
+                                      withContext(Dispatchers.Main) { inputConf = content }
+                                  }
+                              }
                           }.onFailure { e ->
                               android.util.Log.e("AdvancedPrefs", "Error loading $cfgName", e)
                           }
