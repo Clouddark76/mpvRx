@@ -88,64 +88,95 @@ data class ConfigEditorScreen(
 
     // Load from external storage if a folder is configured
     LaunchedEffect(mpvConfStorageLocation) {
-      if (mpvConfStorageLocation.isBlank()) return@LaunchedEffect
-      withContext(Dispatchers.IO) {
-        val tempFile = createTempFile()
-        runCatching {
-          val tree       = DocumentFile.fromTreeUri(context, mpvConfStorageLocation.toUri())
-          val configFile = tree?.findFile(fileName)
-          if (configFile != null && configFile.exists()) {
-            context.contentResolver.openInputStream(configFile.uri)?.copyTo(tempFile.outputStream())
-            val content = tempFile.readLines().joinToString("\n")
-            withContext(Dispatchers.Main) { configText = content }
-          }
+        if (mpvConfStorageLocation.isBlank()) return@LaunchedEffect
+        withContext(Dispatchers.IO) {
+            runCatching {
+                // Intentar como path de archivo directo
+                val rootDir = File(mpvConfStorageLocation)
+                if (rootDir.exists() && rootDir.isDirectory) {
+                    val configFile = rootDir.listFiles()?.firstOrNull {
+                        it.isFile && it.name.equals(fileName, ignoreCase = true)
+                    }
+                    if (configFile != null && configFile.canRead()) {
+                        val content = configFile.readText()
+                        withContext(Dispatchers.Main) { configText = content }
+                        return@runCatching
+                    }
+                }
+                // Fallback SAF (para configs antiguas guardadas como URI)
+                val tempFile = createTempFile()
+                runCatching {
+                    val tree = DocumentFile.fromTreeUri(context, mpvConfStorageLocation.toUri())
+                    val configFile = tree?.findFile(fileName)
+                    if (configFile != null && configFile.exists()) {
+                        context.contentResolver.openInputStream(configFile.uri)?.copyTo(tempFile.outputStream())
+                        val content = tempFile.readLines().joinToString("\n")
+                        withContext(Dispatchers.Main) { configText = content }
+                    }
+                }
+                tempFile.deleteIfExists()
+            }.onFailure { e ->
+                android.util.Log.e("ConfigEditor", "Error loading config", e)
+            }
         }
-        tempFile.deleteIfExists()
-      }
     }
 
     fun saveConfig() {
-      scope.launch(Dispatchers.IO) {
-        try {
-          when (configType) {
-            ConfigType.MPV_CONF   -> preferences.mpvConf.set(configText)
-            ConfigType.INPUT_CONF -> preferences.inputConf.set(configText)
-          }
-          File(context.filesDir, fileName).writeText(configText)
+        scope.launch(Dispatchers.IO) {
+            try {
+                when (configType) {
+                    ConfigType.MPV_CONF   -> preferences.mpvConf.set(configText)
+                    ConfigType.INPUT_CONF -> preferences.inputConf.set(configText)
+                }
+                // Siempre guardar en filesDir (lo que MPV lee)
+                File(context.filesDir, fileName).writeText(configText)
 
-          if (mpvConfStorageLocation.isNotBlank()) {
-            val tree = DocumentFile.fromTreeUri(context, mpvConfStorageLocation.toUri())
-            if (tree == null) {
-              withContext(Dispatchers.Main) {
-                Toast.makeText(context, "No storage location set", Toast.LENGTH_LONG).show()
-              }
-              return@launch
-            }
-            val existing = tree.findFile(fileName)
-            val confFile = existing ?: tree.createFile("text/plain", fileName)?.also { it.renameTo(fileName) }
-            val uri = confFile?.uri ?: run {
-              withContext(Dispatchers.Main) {
-                Toast.makeText(context, "Failed to create file", Toast.LENGTH_LONG).show()
-              }
-              return@launch
-            }
-            context.contentResolver.openOutputStream(uri, "wt")?.use { out ->
-              out.write(configText.toByteArray())
-              out.flush()
-            }
-          }
+                if (mpvConfStorageLocation.isNotBlank()) {
+                    // Intentar escribir directamente como archivo
+                    val rootDir = File(mpvConfStorageLocation)
+                    if (rootDir.exists() && rootDir.isDirectory && rootDir.canWrite()) {
+                        File(rootDir, fileName).writeText(configText)
+                        withContext(Dispatchers.Main) {
+                            hasUnsavedChanges = false
+                            Toast.makeText(context, "$fileName saved", Toast.LENGTH_SHORT).show()
+                            backStack.popSafely()
+                        }
+                        return@launch
+                    }
 
-          withContext(Dispatchers.Main) {
-            hasUnsavedChanges = false
-            Toast.makeText(context, "$fileName saved", Toast.LENGTH_SHORT).show()
-            backStack.popSafely()
-          }
-        } catch (e: Exception) {
-          withContext(Dispatchers.Main) {
-            Toast.makeText(context, "Failed to save: ${e.message}", Toast.LENGTH_LONG).show()
-          }
+                    // Fallback SAF
+                    val tree = DocumentFile.fromTreeUri(context, mpvConfStorageLocation.toUri())
+                    if (tree == null) {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "Storage location not accessible", Toast.LENGTH_LONG).show()
+                        }
+                        return@launch
+                    }
+                    val existing = tree.findFile(fileName)
+                    val confFile = existing ?: tree.createFile("text/plain", fileName)
+                    val uri = confFile?.uri ?: run {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "Failed to create file", Toast.LENGTH_LONG).show()
+                        }
+                        return@launch
+                    }
+                    context.contentResolver.openOutputStream(uri, "wt")?.use { out ->
+                        out.write(configText.toByteArray())
+                        out.flush()
+                    }
+                }
+
+                withContext(Dispatchers.Main) {
+                    hasUnsavedChanges = false
+                    Toast.makeText(context, "$fileName saved", Toast.LENGTH_SHORT).show()
+                    backStack.popSafely()
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(context, "Failed to save: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
         }
-      }
     }
 
     Column(
