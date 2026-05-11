@@ -67,8 +67,6 @@ import app.gyrolet.mpvrx.ui.player.controls.PlayerControls
 import app.gyrolet.mpvrx.ui.theme.MpvrxTheme
 import app.gyrolet.mpvrx.utils.history.RecentlyPlayedOps
 import app.gyrolet.mpvrx.utils.media.HttpUtils
-import app.gyrolet.mpvrx.utils.media.listTreeFilesSafely
-import app.gyrolet.mpvrx.utils.media.openPersistedTreeDocument
 import app.gyrolet.mpvrx.utils.media.PlaybackStateEvents
 import app.gyrolet.mpvrx.utils.media.SubtitleOps
 import app.gyrolet.mpvrx.utils.storage.FileTypeUtils
@@ -698,30 +696,33 @@ class PlayerActivity :
   }
 
   private fun setupAudio() {
-    audioPreferences.audioChannels.get().let {
-      runCatching {
-        MPVLib.setPropertyString(it.property, it.value)
-      }.onFailure { e ->
-        Log.e(TAG, "Error setting audio channels: ${it.property}=${it.value}", e)
+      // Solo aplicar audio-channels si no hay mpv.conf externo.
+      if (advancedPreferences.mpvConfStorageUri.get().isBlank()) {
+          audioPreferences.audioChannels.get().let {
+              runCatching {
+                  MPVLib.setPropertyString(it.property, it.value)
+              }.onFailure { e ->
+                  Log.e(TAG, "Error setting audio channels: ${it.property}=${it.value}", e)
+              }
+          }
       }
-    }
 
-    if (!serviceBound) {
-      audioFocusRequest =
-        AudioFocusRequest
-          .Builder(AudioManager.AUDIOFOCUS_GAIN)
-          .setAudioAttributes(
-            AudioAttributes
-              .Builder()
-              .setUsage(AudioAttributes.USAGE_MEDIA)
-              .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
-              .build(),
-          ).setOnAudioFocusChangeListener(audioFocusChangeListener)
-          .setAcceptsDelayedFocusGain(true)
-          .setWillPauseWhenDucked(true)
-          .build()
-      requestAudioFocus()
-    }
+      if (!serviceBound) {
+          audioFocusRequest =
+              AudioFocusRequest
+                  .Builder(AudioManager.AUDIOFOCUS_GAIN)
+                  .setAudioAttributes(
+                      AudioAttributes
+                          .Builder()
+                          .setUsage(AudioAttributes.USAGE_MEDIA)
+                          .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+                          .build(),
+                  ).setOnAudioFocusChangeListener(audioFocusChangeListener)
+                  .setAcceptsDelayedFocusGain(true)
+                  .setWillPauseWhenDucked(true)
+                  .build()
+          requestAudioFocus()
+      }
   }
 
   /**
@@ -1513,19 +1514,26 @@ class PlayerActivity :
       val destinationDir = File(filesDir, "fonts").also { it.mkdirs() }
       destinationDir.listFiles()?.filter { it.isDirectory }?.forEach { it.deleteRecursively() }
 
-      // Intentar primero como path de archivo directo
       val fontsDir = File(fontsFolderPath)
       if (fontsDir.exists() && fontsDir.isDirectory && fontsDir.canRead()) {
           syncFontDirectoryFromFile(fontsDir, destinationDir)
           return
       }
 
-      // Fallback: URI SAF (para configuraciones antiguas migradas)
+      // Fallback SAF — reemplaza la llamada a syncFontDirectory() eliminada
       runCatching {
-          val sourceDir = openPersistedTreeDocument(this, fontsFolderPath) ?: return
-          syncFontDirectory(sourceDir, destinationDir)
+          val uri = fontsFolderPath.toUri()
+          val tree = DocumentFile.fromTreeUri(this, uri) ?: return
+          val fontExtensions = setOf("ttf", "otf", "ttc", "woff", "woff2")
+          listTreeFilesSafely(tree).forEach { doc ->
+              if (!doc.isFile) return@forEach
+              val name = doc.name ?: return@forEach
+              if (name.substringAfterLast('.').lowercase() !in fontExtensions) return@forEach
+              val target = File(destinationDir, name)
+              copyDocumentToFileIfNeeded(doc, target)
+          }
       }.onFailure { e ->
-          Log.e(TAG, "Failed to sync subtitle fonts", e)
+          Log.e(TAG, "Failed to sync subtitle fonts via SAF fallback", e)
       }
   }
 
@@ -1546,43 +1554,7 @@ class PlayerActivity :
       return copiedCount
   }
 
-  private fun syncFlatDocumentDirectory(
-    sourceDir: DocumentFile,
-    destinationDir: File,
-    includeFile: (name: String) -> Boolean,
-    allowedNames: Set<String>? = null,
-    protectedNames: Set<String> = emptySet(),
-    deleteMissing: Boolean,
-  ): Int {
-    destinationDir.mkdirs()
-    val expectedNames = mutableSetOf<String>()
-    var copiedCount = 0
-
-    listTreeFilesSafely(sourceDir).forEach { document ->
-      if (!document.isFile) return@forEach
-      val name = document.name ?: return@forEach
-      if (!includeFile(name)) return@forEach
-      if (allowedNames != null && name !in allowedNames) return@forEach
-
-      expectedNames += name
-      if (copyDocumentToFileIfNeeded(document, File(destinationDir, name))) {
-        copiedCount++
-      }
-    }
-
-    if (deleteMissing) {
-      destinationDir.listFiles()?.forEach { existingFile ->
-        if (existingFile.isFile &&
-          existingFile.name !in expectedNames &&
-          existingFile.name !in protectedNames
-        ) {
-          existingFile.delete()
-        }
-      }
-    }
-
-    return copiedCount
-  }
+  
 
      /**
    * Copia [source] a [target] solo si el tamaño o la fecha de modificación
@@ -1696,22 +1668,6 @@ class PlayerActivity :
       nestedDir.deleteRecursively()
     }
   }
-
-  /**
-   * Finds a subdirectory by name (case-insensitive) within a DocumentFile.
-   */
-  private fun findSubdirCaseInsensitive(parent: DocumentFile, name: String): DocumentFile? =
-    listTreeFilesSafely(parent).firstOrNull {
-      it.isDirectory && it.name?.equals(name, ignoreCase = true) == true
-    }
-
-  /**
-   * Finds a file by name (case-insensitive) within a DocumentFile.
-   */
-  private fun findFileCaseInsensitive(parent: DocumentFile, name: String): DocumentFile? =
-    listTreeFilesSafely(parent).firstOrNull {
-      it.isFile && it.name?.equals(name, ignoreCase = true) == true
-    }
 
   override fun onResume() {
     super.onResume()
