@@ -89,6 +89,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.koin.android.ext.android.inject
 import java.io.File
+import java.net.URLDecoder
 
 private enum class BackgroundPlaybackStartResult {
   Started,
@@ -126,6 +127,39 @@ class PlayerActivity :
     PlayerViewModelProviderFactory(this)
   }
 
+   /**
+ * Decodes the filename portion of localhost URLs to handle URL-encoded characters.
+ */ 
+   private fun decodeLocalhostUrl(url: String): String {
+      // Only process localhost/127.0.0.1 URLs
+      if (!url.startsWith("http://127.0.0.1") && !url.startsWith("http://localhost")) {
+          return url
+      }
+
+      return try {
+          val lastSlash = url.lastIndexOf('/')
+          if (lastSlash == -1 || lastSlash == url.length - 1) {
+              // No filename part to decode
+              url
+          } else {
+              // Split into path + filename, decode only the filename
+              val pathPart = url.substring(0, lastSlash + 1)
+              val filename = url.substring(lastSlash + 1)
+              val decodedFilename = URLDecoder.decode(filename, "UTF-8")
+
+              // Re-encode problematic characters that break URLs
+              val safeFilename = decodedFilename
+                  .replace("#", "%23")  // # must stay encoded as it's a fragment identifier
+                  .replace("?", "%3F")  // ? starts query parameters
+
+              pathPart + safeFilename
+          }
+      } catch (e: Exception) {
+          Log.w(TAG, "Failed to decode localhost URL filename: $url", e)
+          url
+      }
+   }
+  
   /**
    * Binding for the player layout.
    */
@@ -1243,12 +1277,8 @@ class PlayerActivity :
   }
 
   /**
-   * Syncs ALL MPV assets from the user's configured MPV directory to internal storage.
-   * Handles: mpv.conf, input.conf, scripts/, script-opts/, shaders/, fonts/
-   *
-   * Uses case-insensitive subfolder matching and falls back to root scanning
-   * if standard subfolders don't exist. Falls back to preferences-based config
-   * if no user directory is configured.
+   * Syncs ALL MPV assets from the user's configured directory to internal storage.
+   * Now uses direct file paths instead of SAF URIs.
    */
   private fun syncFromUserMpvDirectory(syncSubtitleFontsFolder: Boolean) {
       val storageLocation = advancedPreferences.mpvConfStorageUri.get()
@@ -1264,19 +1294,17 @@ class PlayerActivity :
               syncFontsFromDir(rootDir, syncSubtitleFontsFolder)
               Log.d(TAG, "Full directory sync completed")
               return
-          } else {
-              Log.w(TAG, "Storage location not accessible as file path: $storageLocation")
           }
+          Log.w(TAG, "Configured path not accessible: $storageLocation")
       }
 
-      // Fallback: usa preferencias de la app (sin directorio configurado)
+      // Fallback: sin directorio configurado, usar preferencias
       Log.d(TAG, "No accessible MPV directory, using preferences fallback")
       copyMPVConfigFromPreferences()
       if (syncSubtitleFontsFolder) {
           syncSubtitleFontsFromPreferenceFolder()
       }
   }
-
   // ==================== Config Files Sync ====================
 
   /**
@@ -1286,7 +1314,6 @@ class PlayerActivity :
   private fun syncConfigFilesFromDir(rootDir: File) {
       for (configName in listOf("mpv.conf", "input.conf")) {
           runCatching {
-              // Buscar case-insensitive
               val sourceFile = rootDir.listFiles()?.firstOrNull {
                   it.isFile && it.name.equals(configName, ignoreCase = true)
               }
@@ -1299,7 +1326,6 @@ class PlayerActivity :
                   }
                   Log.d(TAG, "Synced config: $configName (${content.length} chars)")
               } else {
-                  // No está en el directorio, usar preferencias
                   val prefContent = when (configName) {
                       "mpv.conf"   -> advancedPreferences.mpvConf.get()
                       "input.conf" -> advancedPreferences.inputConf.get()
@@ -1324,12 +1350,11 @@ class PlayerActivity :
    * Looks in scripts/ subfolder first (case-insensitive), falls back to root.
    */
   private fun syncScriptsFromDir(rootDir: File) {
-      val internalScriptsDir = File(filesDir, "scripts")
-      internalScriptsDir.mkdirs()
+      val internalScriptsDir = File(filesDir, "scripts").also { it.mkdirs() }
 
       if (!advancedPreferences.enableLuaScripts.get()) {
           internalScriptsDir.listFiles()?.forEach { it.delete() }
-          Log.d(TAG, "Scripts disabled, skipping")
+          Log.d(TAG, "Scripts disabled, clearing internal scripts dir")
           return
       }
 
@@ -1344,37 +1369,36 @@ class PlayerActivity :
 
       scriptsSubdir.listFiles()?.forEach { file ->
           if (!file.isFile) return@forEach
-          val ext = file.extension.lowercase()
-          if (ext !in scriptExtensions) return@forEach
+          if (file.extension.lowercase() !in scriptExtensions) return@forEach
           if (selectedScripts.isNotEmpty() && file.name !in selectedScripts) return@forEach
           expectedNames += file.name
-          val target = File(internalScriptsDir, file.name)
-          if (copyFileIfNeeded(file, target)) copiedCount++
+          if (copyFileIfNeeded(file, File(internalScriptsDir, file.name))) copiedCount++
       }
 
-      // Eliminar scripts que ya no existen o no están seleccionados
+      // Eliminar scripts que ya no están en la fuente o no están seleccionados
       internalScriptsDir.listFiles()?.forEach { existing ->
           if (existing.isFile && existing.name !in expectedNames) existing.delete()
       }
 
-      Log.d(TAG, "Scripts sync: $copiedCount file(s)")
+      Log.d(TAG, "Scripts sync: $copiedCount file(s) from ${scriptsSubdir.name}/")
   }
-
   // ==================== Script Options Sync ====================
 
   /**
    * Syncs all files from script-opts/ subfolder (case-insensitive).
    */
   private fun syncScriptOptsFromDir(rootDir: File) {
-      val internalDir = File(filesDir, "script-opts")
-      internalDir.mkdirs()
+      val internalDir = File(filesDir, "script-opts").also { it.mkdirs() }
 
       val sourceDir = rootDir.listFiles()?.firstOrNull {
           it.isDirectory && it.name.equals("script-opts", ignoreCase = true)
-      } ?: return
+      } ?: run {
+          Log.d(TAG, "No script-opts/ subfolder found, skipping")
+          return
+      }
 
-      var copiedCount = 0
       val expectedNames = mutableSetOf<String>()
+      var copiedCount = 0
 
       sourceDir.listFiles()?.forEach { file ->
           if (!file.isFile) return@forEach
@@ -1397,8 +1421,7 @@ class PlayerActivity :
    * Saves to shaders/ (same as non-Play Store) so Lua scripts can find them at ~~/shaders/
    */
   private fun syncShadersFromDir(rootDir: File) {
-      val shadersDir = File(filesDir, "shaders")
-      shadersDir.mkdirs()
+      val shadersDir = File(filesDir, "shaders").also { it.mkdirs() }
 
       val sourceDir = rootDir.listFiles()?.firstOrNull {
           it.isDirectory && it.name.equals("shaders", ignoreCase = true)
@@ -1432,8 +1455,7 @@ class PlayerActivity :
    * Also syncs from the subtitle preferences font folder if set.
    */
   private fun syncFontsFromDir(rootDir: File, syncSubtitleFontsFolder: Boolean) {
-      val internalFontsDir = File(filesDir, "fonts")
-      internalFontsDir.mkdirs()
+      val internalFontsDir = File(filesDir, "fonts").also { it.mkdirs() }
       internalFontsDir.listFiles()?.filter { it.isDirectory }?.forEach { it.deleteRecursively() }
 
       val fontsSubdir = rootDir.listFiles()?.firstOrNull {
@@ -1449,9 +1471,7 @@ class PlayerActivity :
           if (copyFileIfNeeded(file, File(internalFontsDir, file.name))) copiedCount++
       }
 
-      if (syncSubtitleFontsFolder) {
-          syncSubtitleFontsFromPreferenceFolder()
-      }
+      if (syncSubtitleFontsFolder) syncSubtitleFontsFromPreferenceFolder()
 
       Log.d(TAG, "Fonts sync: $copiedCount file(s)")
   }
@@ -1490,29 +1510,28 @@ class PlayerActivity :
       val fontsFolderPath = subtitlesPreferences.fontsFolder.get()
       if (fontsFolderPath.isBlank()) return
 
+      val destinationDir = File(filesDir, "fonts").also { it.mkdirs() }
+      destinationDir.listFiles()?.filter { it.isDirectory }?.forEach { it.deleteRecursively() }
+
       // Intentar primero como path de archivo directo
       val fontsDir = File(fontsFolderPath)
       if (fontsDir.exists() && fontsDir.isDirectory && fontsDir.canRead()) {
-          val destinationDir = File(filesDir, "fonts")
-          destinationDir.mkdirs()
-          destinationDir.listFiles()?.filter { it.isDirectory }?.forEach { it.deleteRecursively() }
           syncFontDirectoryFromFile(fontsDir, destinationDir)
           return
       }
 
-      // Fallback: intentar como URI SAF (compatibilidad con configuraciones antiguas)
+      // Fallback: URI SAF (para configuraciones antiguas migradas)
       runCatching {
-          val uri = fontsFolderPath.toUri()
           val sourceDir = openPersistedTreeDocument(this, fontsFolderPath) ?: return
-          val destinationDir = File(filesDir, "fonts")
-          destinationDir.mkdirs()
-          destinationDir.listFiles()?.filter { it.isDirectory }?.forEach { it.deleteRecursively() }
           syncFontDirectory(sourceDir, destinationDir)
       }.onFailure { e ->
           Log.e(TAG, "Failed to sync subtitle fonts", e)
       }
   }
 
+  /**
+   * Copia recursivamente fuentes desde [sourceDir] (File) a [destinationDir].
+   */
   private fun syncFontDirectoryFromFile(sourceDir: File, destinationDir: File): Int {
       destinationDir.mkdirs()
       var copiedCount = 0
@@ -1521,8 +1540,7 @@ class PlayerActivity :
       sourceDir.walkTopDown().forEach { file ->
           if (!file.isFile) return@forEach
           if (file.extension.lowercase() !in fontExtensions) return@forEach
-          val target = File(destinationDir, file.name)
-          if (copyFileIfNeeded(file, target)) copiedCount++
+          if (copyFileIfNeeded(file, File(destinationDir, file.name))) copiedCount++
       }
 
       return copiedCount
@@ -1566,9 +1584,9 @@ class PlayerActivity :
     return copiedCount
   }
 
-   * Copia [source] a [target] solo si el contenido ha cambiado
-   * (compara tamaño y fecha de modificación).
-   * Retorna true si se copió, false si ya estaba actualizado.
+     /**
+   * Copia [source] a [target] solo si el tamaño o la fecha de modificación
+   * difieren. Retorna true si se copió efectivamente.
    */
   private fun copyFileIfNeeded(source: File, target: File): Boolean {
       if (target.exists() &&
@@ -1612,7 +1630,9 @@ class PlayerActivity :
                   it.isDirectory && it.name.equals("scripts", ignoreCase = true)
               } ?: rootDir
 
-              val scriptFile = scriptsDir.listFiles()?.firstOrNull { it.name == scriptName }
+              val scriptFile = scriptsDir.listFiles()?.firstOrNull {
+                  it.isFile && it.name == scriptName
+              }
 
               if (scriptFile != null && scriptFile.canRead()) {
                   val internalScriptsDir = File(filesDir, "scripts").also { it.mkdirs() }
@@ -1624,11 +1644,17 @@ class PlayerActivity :
                       MPVLib.command("load-script", targetFile.absolutePath)
                       viewModel.showToast("Loaded script: $scriptName")
                   }
+              } else {
+                  Log.w(TAG, "Script not found in storage: $scriptName")
               }
           }.onFailure { e ->
               Log.e(TAG, "Error loading script at runtime: $scriptName", e)
               withContext(Dispatchers.Main) {
-                  Toast.makeText(this@PlayerActivity, "Failed to load script: ${e.message}", Toast.LENGTH_LONG).show()
+                  Toast.makeText(
+                      this@PlayerActivity,
+                      "Failed to load script: ${e.message}",
+                      Toast.LENGTH_LONG,
+                  ).show()
               }
           }
       }
@@ -1868,22 +1894,29 @@ class PlayerActivity :
   }
 
   /**
-   * Parses the file path from the intent.
-   *
-   * This method checks the intent action and data to determine the file path.
-   * It supports the following actions:
-   * - ACTION_VIEW: The file path is contained in the intent data.
-   * - ACTION_SEND: The file path is contained in the intent extras.
-   *
-   * @param intent The intent containing the file URI
-   * @return The resolved file path, or null if not found
-   */
-  private fun parsePathFromIntent(intent: Intent): String? =
-    when (intent.action) {
-      Intent.ACTION_VIEW -> intent.data?.resolveUri(this)
-      Intent.ACTION_SEND -> parsePathFromSendIntent(intent)
-      else -> intent.getStringExtra("uri")
-    }
+ * Parses the file path from the intent, handling URL decoding for localhost URLs.
+ *
+ * This method checks the intent action and data to determine the file path.
+ * It supports the following actions:
+ * - ACTION_VIEW: The file path is contained in the intent data.
+ * - ACTION_SEND: The file path is contained in the intent extras.
+ *
+ * For localhost URLs (network files served through local proxy), it decodes
+ * the filename portion to handle special characters properly.
+ *
+ * @param intent The intent containing the file URI
+ * @return The resolved file path with decoded filename if applicable, or null if not found
+ */
+  private fun parsePathFromIntent(intent: Intent): String? {
+      val filepath = when (intent.action) {
+          Intent.ACTION_VIEW -> intent.data?.resolveUri(this)
+          Intent.ACTION_SEND -> parsePathFromSendIntent(intent)
+          else -> intent.getStringExtra("uri")
+      }
+
+      // Decode localhost URLs to handle special characters in filenames
+      return filepath?.let { decodeLocalhostUrl(it) }
+  }
 
   /**
    * Parses the file path from a SEND intent.
@@ -2668,36 +2701,41 @@ class PlayerActivity :
    * This ensures subtitle customizations (font, colors, position, etc.) persist across videos.
    */
   private fun applySubtitlePreferences() {
-    // Typography settings
-    MPVLib.setPropertyString("sub-font", subtitlesPreferences.font.get())
-    MPVLib.setPropertyInt("sub-font-size", subtitlesPreferences.fontSize.get())
-    MPVLib.setPropertyBoolean("sub-bold", subtitlesPreferences.bold.get())
-    MPVLib.setPropertyBoolean("sub-italic", subtitlesPreferences.italic.get())
-    MPVLib.setPropertyString("sub-justify", subtitlesPreferences.justification.get().value)
-    MPVLib.setPropertyString("sub-border-style", subtitlesPreferences.borderStyle.get().value)
-    MPVLib.setPropertyInt("sub-outline-size", subtitlesPreferences.borderSize.get())
-    MPVLib.setPropertyInt("sub-shadow-offset", subtitlesPreferences.shadowOffset.get())
+      // Si el usuario tiene un directorio MPV configurado, su mpv.conf ya fue
+      // cargado por MPV durante initialize() y en cada loadfile.
+      // NO sobreescribir sus opciones — mpv.conf es la fuente de verdad.
+      if (advancedPreferences.mpvConfStorageUri.get().isNotBlank()) {
+          Log.d(TAG, "External mpv.conf present — skipping app subtitle preference injection")
+          return
+      }
 
-    // Color settings
-    MPVLib.setPropertyString("sub-color", subtitlesPreferences.textColor.get().toColorHexString())
-    MPVLib.setPropertyString("sub-border-color", subtitlesPreferences.borderColor.get().toColorHexString())
-    MPVLib.setPropertyString("sub-back-color", subtitlesPreferences.backgroundColor.get().toColorHexString())
+      // Sin directorio configurado: aplicar preferencias de la app como fallback.
+      MPVLib.setPropertyString("sub-font", subtitlesPreferences.font.get())
+      MPVLib.setPropertyInt("sub-font-size", subtitlesPreferences.fontSize.get())
+      MPVLib.setPropertyBoolean("sub-bold", subtitlesPreferences.bold.get())
+      MPVLib.setPropertyBoolean("sub-italic", subtitlesPreferences.italic.get())
+      MPVLib.setPropertyString("sub-justify", subtitlesPreferences.justification.get().value)
+      MPVLib.setPropertyString("sub-border-style", subtitlesPreferences.borderStyle.get().value)
+      MPVLib.setPropertyInt("sub-outline-size", subtitlesPreferences.borderSize.get())
+      MPVLib.setPropertyInt("sub-shadow-offset", subtitlesPreferences.shadowOffset.get())
 
-    // Miscellaneous settings
-    val scaleByWindow = subtitlesPreferences.scaleByWindow.get()
-    val scaleValue = if (scaleByWindow) "yes" else "no"
-    MPVLib.setPropertyString("sub-scale-by-window", scaleValue)
-    MPVLib.setPropertyString("sub-use-margins", scaleValue)
+      MPVLib.setPropertyString("sub-color", subtitlesPreferences.textColor.get().toColorHexString())
+      MPVLib.setPropertyString("sub-border-color", subtitlesPreferences.borderColor.get().toColorHexString())
+      MPVLib.setPropertyString("sub-back-color", subtitlesPreferences.backgroundColor.get().toColorHexString())
 
-    MPVLib.setPropertyFloat("sub-scale", subtitlesPreferences.subScale.get())
-    applySubtitleLayout(
-      primaryPosition = subtitlesPreferences.subPos.get(),
-      forceAssOverride = subtitlesPreferences.overrideAssSubs.get(),
-    )
+      val scaleByWindow = subtitlesPreferences.scaleByWindow.get()
+      val scaleValue = if (scaleByWindow) "yes" else "no"
+      MPVLib.setPropertyString("sub-scale-by-window", scaleValue)
+      MPVLib.setPropertyString("sub-use-margins", scaleValue)
 
-    Log.d(TAG, "Applied subtitle preferences")
+      MPVLib.setPropertyFloat("sub-scale", subtitlesPreferences.subScale.get())
+      applySubtitleLayout(
+          primaryPosition = subtitlesPreferences.subPos.get(),
+          forceAssOverride = subtitlesPreferences.overrideAssSubs.get(),
+      )
+
+      Log.d(TAG, "Applied app subtitle preferences (no external mpv.conf)")
   }
-
   /**
    * Helper extension function to convert Int color to hex string for MPV
    */
@@ -2867,10 +2905,13 @@ class PlayerActivity :
    * @param state The saved playback state entity (null if no saved state)
    */
   private fun applyDefaultSettings(state: PlaybackStateEntity?) {
-    if (state == null) {
-      val defaultSubSpeed = subtitlesPreferences.defaultSubSpeed.get().toDouble()
-      MPVLib.setPropertyDouble("sub-speed", defaultSubSpeed)
-    }
+      if (state == null) {
+          // Solo aplicar sub-speed por defecto si no hay mpv.conf externo.
+          if (advancedPreferences.mpvConfStorageUri.get().isBlank()) {
+              val defaultSubSpeed = subtitlesPreferences.defaultSubSpeed.get().toDouble()
+              MPVLib.setPropertyDouble("sub-speed", defaultSubSpeed)
+          }
+      }
   }
 
   /**
