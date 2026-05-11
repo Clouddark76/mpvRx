@@ -276,41 +276,61 @@ object AdvancedPreferencesScreen : Screen {
 
               // Load config files when storage location changes
               LaunchedEffect(mpvConfStorageLocation) {
-                if (mpvConfStorageLocation.isBlank()) return@LaunchedEffect
-                withContext(Dispatchers.IO) {
-                  val tempFile = kotlin.io.path.createTempFile()
-                  runCatching {
-                    val tree = DocumentFile.fromTreeUri(context, mpvConfStorageLocation.toUri())
-                    val mpvConfFile = tree?.findFile("mpv.conf")
-                    if (mpvConfFile != null && mpvConfFile.exists()) {
-                      context.contentResolver.openInputStream(mpvConfFile.uri)?.copyTo(tempFile.outputStream())
-                      val content = tempFile.readLines().fastJoinToString("\n")
-                      preferences.mpvConf.set(content)
-                      File(context.filesDir, "mpv.conf").writeText(content)
-                      withContext(Dispatchers.Main) { mpvConf = content }
-                    }
+                  if (mpvConfStorageLocation.isBlank()) return@LaunchedEffect
+                  withContext(Dispatchers.IO) {
+                      for (cfgName in listOf("mpv.conf", "input.conf")) {
+                          runCatching {
+                              val rootDir = File(mpvConfStorageLocation)
+                              if (rootDir.exists() && rootDir.isDirectory) {
+                                  val file = rootDir.listFiles()?.firstOrNull {
+                                      it.isFile && it.name.equals(cfgName, ignoreCase = true)
+                                  }
+                                  if (file != null && file.canRead()) {
+                                      val content = file.readText()
+                                      when (cfgName) {
+                                          "mpv.conf"   -> {
+                                              preferences.mpvConf.set(content)
+                                              File(context.filesDir, cfgName).writeText(content)
+                                              withContext(Dispatchers.Main) { mpvConf = content }
+                                          }
+                                          "input.conf" -> {
+                                              preferences.inputConf.set(content)
+                                              File(context.filesDir, cfgName).writeText(content)
+                                              withContext(Dispatchers.Main) { inputConf = content }
+                                          }
+                                      }
+                                      return@runCatching
+                                  }
+                              }
+                              // Fallback SAF para configs antiguas
+                              val tempFile = kotlin.io.path.createTempFile()
+                              runCatching {
+                                  val tree = DocumentFile.fromTreeUri(context, mpvConfStorageLocation.toUri())
+                                  val configFile = tree?.findFile(cfgName)
+                                  if (configFile != null && configFile.exists()) {
+                                      context.contentResolver.openInputStream(configFile.uri)
+                                          ?.copyTo(tempFile.outputStream())
+                                      val content = tempFile.readLines().fastJoinToString("\n")
+                                      when (cfgName) {
+                                          "mpv.conf"   -> {
+                                              preferences.mpvConf.set(content)
+                                              File(context.filesDir, cfgName).writeText(content)
+                                              withContext(Dispatchers.Main) { mpvConf = content }
+                                          }
+                                          "input.conf" -> {
+                                              preferences.inputConf.set(content)
+                                              File(context.filesDir, cfgName).writeText(content)
+                                              withContext(Dispatchers.Main) { inputConf = content }
+                                          }
+                                      }
+                                  }
+                              }
+                              tempFile.deleteIfExists()
+                          }.onFailure { e ->
+                              android.util.Log.e("AdvancedPrefs", "Error loading $cfgName", e)
+                          }
+                      }
                   }
-                  tempFile.deleteIfExists()
-                }
-              }
-
-              LaunchedEffect(mpvConfStorageLocation) {
-                if (mpvConfStorageLocation.isBlank()) return@LaunchedEffect
-                withContext(Dispatchers.IO) {
-                  val tempFile = kotlin.io.path.createTempFile()
-                  runCatching {
-                    val tree = DocumentFile.fromTreeUri(context, mpvConfStorageLocation.toUri())
-                    val inputConfFile = tree?.findFile("input.conf")
-                    if (inputConfFile != null && inputConfFile.exists()) {
-                      context.contentResolver.openInputStream(inputConfFile.uri)?.copyTo(tempFile.outputStream())
-                      val content = tempFile.readLines().fastJoinToString("\n")
-                      preferences.inputConf.set(content)
-                      File(context.filesDir, "input.conf").writeText(content)
-                      withContext(Dispatchers.Main) { inputConf = content }
-                    }
-                  }
-                  tempFile.deleteIfExists()
-                }
               }
 
               Preference(
