@@ -405,12 +405,13 @@ class PlayerViewModel(
             Log.w(TAG, "Playback position polling failed", error)
           }
         }
-        val intervalMs =
+        val intervalMs = runCatching {
           when {
             paused == false && (seekBarVisibleForPolling || controlsVisibleForPolling) -> 50L
-            paused == false -> 500L   // was 250 ms — halved to reduce idle CPU wake-ups
+            paused == false -> 500L
             else -> 500L
           }
+        }.getOrDefault(500L)  // ← fallback si el flow aún no está listo
         delay(intervalMs)
       }
     }
@@ -4027,7 +4028,7 @@ fun <T> Flow<T>.collectAsState(
   scope: CoroutineScope,
   initialValue: T? = null,
 ) = object : ReadOnlyProperty<Any?, T?> {
-  private var value: T? = initialValue
+  @Volatile private var value: T? = initialValue
 
   init {
     scope.launch { collect { value = it } }
