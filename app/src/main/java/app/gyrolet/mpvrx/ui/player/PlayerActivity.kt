@@ -3242,7 +3242,19 @@ class PlayerActivity :
 
     when (keyCode) {
       KeyEvent.KEYCODE_DPAD_UP -> {
-        return super.onKeyDown(keyCode, event)
+          // Navega al siguiente capítulo, o salta +30s si no hay capítulos
+          if (!seekToNextChapter()) {
+              viewModel.seekBy(30)
+          }
+          return true
+      }
+
+      KeyEvent.KEYCODE_DPAD_DOWN -> {
+          // Navega al capítulo anterior, o salta -30s si no hay capítulos
+          if (!seekToPreviousChapter()) {
+              viewModel.seekBy(-30)
+          }
+          return true
       }
 
       KeyEvent.KEYCODE_DPAD_DOWN,
@@ -3273,6 +3285,11 @@ class PlayerActivity :
         if (isTrackSheetOpen) {
           return super.onKeyDown(keyCode, event)
         }
+        // Center/Enter para play/pause
+        if (isNoSheetOpen) {
+          viewModel.pauseUnpause()
+          return true
+        }
         return super.onKeyDown(keyCode, event)
       }
 
@@ -3295,6 +3312,21 @@ class PlayerActivity :
 
       KeyEvent.KEYCODE_MEDIA_STOP -> {
         finishAndRemoveTask()
+        return true
+      }
+
+      KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
+        viewModel.pauseUnpause()
+        return true
+      }
+
+      KeyEvent.KEYCODE_MEDIA_PLAY -> {
+        viewModel.unpause()
+        return true
+      }
+
+      KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+        viewModel.pause()
         return true
       }
 
@@ -3322,14 +3354,15 @@ class PlayerActivity :
    * @param event The key event
    * @return true if event was handled, false otherwise
    */
-  override fun onKeyUp(
-    keyCode: Int,
-    event: KeyEvent?,
-  ): Boolean {
-    event?.let {
-      if (player.onKey(it)) return true
-    }
-    return super.onKeyUp(keyCode, event)
+  override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+      // No pasar DPAD_CENTER/ENTER a MPV para evitar doble acción
+      if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
+          return true
+      }
+      event?.let {
+          if (player.onKey(it)) return true
+      }
+      return super.onKeyUp(keyCode, event)
   }
 
   // ==================== System UI Management ====================
@@ -3759,6 +3792,39 @@ class PlayerActivity :
     }
   }
 
+  /**
+   * Navega al siguiente capítulo. Retorna true si había capítulo disponible.
+   */
+  private fun seekToNextChapter(): Boolean {
+      val chapters = viewModel.chapters.value
+      if (chapters.isEmpty()) return false
+      val currentPos = (viewModel.pos ?: 0).toDouble()
+      val nextIndex = chapters.indexOfFirst { it.start > currentPos + 0.5 }
+      if (nextIndex == -1) return false
+      val next = chapters[nextIndex]
+      viewModel.seekTo(next.start.toInt())
+      // Mostrar nombre del capítulo (Segment usa 'name' como label)
+      val chapterName = next.name.ifBlank { "Chapter ${nextIndex + 1}" }
+      viewModel.playerUpdate.value = PlayerUpdates.ShowText("▶ $chapterName")
+      return true
+  }
+
+  /**
+   * Navega al capítulo anterior. Retorna true si había capítulo disponible.
+   */
+  private fun seekToPreviousChapter(): Boolean {
+      val chapters = viewModel.chapters.value
+      if (chapters.isEmpty()) return false
+      val currentPos = (viewModel.pos ?: 0).toDouble()
+      val prevIndex = chapters.indexOfLast { it.start < currentPos - 3.0 }
+      if (prevIndex == -1) return false
+      val prev = chapters[prevIndex]
+      viewModel.seekTo(prev.start.toInt())
+      val chapterName = prev.name.ifBlank { "Chapter ${prevIndex + 1}" }
+      viewModel.playerUpdate.value = PlayerUpdates.ShowText("◀ $chapterName")
+      return true
+  }
+  
   /**
    * Play the previous video in the playlist
    */
