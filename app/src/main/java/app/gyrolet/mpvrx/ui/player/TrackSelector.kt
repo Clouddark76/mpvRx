@@ -411,3 +411,4 @@ private suspend fun ensureSubtitleTrackSelected(tracks: List<Track>, hasState: B
       Log.e(TAG, "Subtitle selection failed", e)
     }
   }
+} 
