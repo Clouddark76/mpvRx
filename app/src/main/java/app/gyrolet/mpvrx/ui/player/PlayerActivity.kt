@@ -662,6 +662,11 @@ class PlayerActivity :
       return
     }
 
+    if (!viewModel.controlsShown.value) {
+      viewModel.showControls()
+      return
+    }
+
     // Check if auto PIP is enabled - enter PIP mode instead of finishing
     if (playerPreferences.autoPiPOnNavigation.get() && isReady) {
       pipHelper.enterPipMode()
