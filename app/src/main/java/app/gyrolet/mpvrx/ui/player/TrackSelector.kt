@@ -222,7 +222,7 @@ class TrackSelector(
   // 2. SUBTITLE SELECTION LOGIC (Multi-Pass Preserved)
   // ==================================================
 
-  private suspend fun ensureSubtitleTrackSelected(tracks: List<Track>, hasState: Boolean) {
+private suspend fun ensureSubtitleTrackSelected(tracks: List<Track>, hasState: Boolean) {
     try {
       val currentSid = getTrackSelectionId("sid")
 
@@ -250,20 +250,20 @@ class TrackSelector(
       }
       if (preferredLangs.isEmpty()) preferredLangs = listOf("eng", "en")
 
-      val ignoreSubs = listOf("signs", "songs", "lyrics", "forced", "sdh", "colored", "karaoke")
+      val ignoreSubs = listOf("signs", "songs", "lyrics", "sdh", "colored", "karaoke")
       val subTracks = tracks.filter { it.type == "sub" }
 
       // PASS 00: EXTERNAL TRACK OVERRIDE (Protects manually loaded subtitle files)
       for (track in subTracks) {
         if (track.external) {
-            if (currentSid == track.id) {
-              Log.d(TAG, "Smart Sub: External Subtitle Detected (id=${track.id}) [Already Active. Skipping Change.]")
-            } else {
-              Log.d(TAG, "Smart Sub: External Subtitle Detected (id=${track.id}) [Applied]")
-              setTrackSelectionId("sid", track.id)
-            }
-            return
+          if (currentSid == track.id) {
+            Log.d(TAG, "Smart Sub: External Subtitle Detected (id=${track.id}) [Already Active. Skipping Change.]")
+          } else {
+            Log.d(TAG, "Smart Sub: External Subtitle Detected (id=${track.id}) [Applied]")
+            setTrackSelectionId("sid", track.id)
           }
+          return
+        }
       }
 
       // PASS A0: KEEP FILE'S NATIVE DEFAULT JAPANESE SUBS FOR ANIME
@@ -308,6 +308,35 @@ class TrackSelector(
         }
       }
 
+      // PASS B-FORCED: FORCED TRACK MATCHING ACTIVE AUDIO LANGUAGE
+      // Si hay un sub forced cuyo lang coincide con el audio activo, tiene prioridad absoluta
+      // sobre el sub normal del mismo idioma. Ej: audio es-419 → sub forced es-419 wins.
+      val activeAudioLang = run {
+        val aid = MPVLib.getPropertyInt("aid") ?: -1
+        if (aid <= 0) null
+        else tracks.firstOrNull { it.type == "audio" && it.id == aid }?.lang
+      }
+
+      if (activeAudioLang != null) {
+        for (track in subTracks) {
+          if (!track.forced) continue
+          if (ignoreSubs.none { track.title.contains(it) } && !track.hearing) {
+            // Coincidencia exacta o por prefijo con el audio activo
+            if (track.lang == activeAudioLang || track.lang.startsWith(activeAudioLang) ||
+                activeAudioLang.startsWith(track.lang)
+            ) {
+              if (currentSid == track.id) {
+                Log.d(TAG, "Smart Sub: Forced track matching active audio lang '${activeAudioLang}' (id=${track.id}) [Already Active. Skipping Change.]")
+              } else {
+                Log.d(TAG, "Smart Sub: Forced track matching active audio lang '${activeAudioLang}' (id=${track.id}) [Applied]")
+                setTrackSelectionId("sid", track.id)
+              }
+              return
+            }
+          }
+        }
+      }
+
       // PASS B: CLEAN LANGUAGE MATCH
       for (prefLang in preferredLangs) {
         for (track in subTracks) {
@@ -324,7 +353,7 @@ class TrackSelector(
           }
         }
       }
-      
+
       // PASS C: LAST RESORT MATCHING
       for (prefLang in preferredLangs) {
         for (track in subTracks) {
@@ -341,9 +370,6 @@ class TrackSelector(
       }
 
       // PASS D: TITLE-NAME FALLBACK
-      // Handles tracks where the encoder left lang empty/undetermined but gave the track
-      // a descriptive title like "Subtitle", "Subtitles", "Full Subtitles", "English", etc.
-      // Common in anime web-rips (Crunchyroll, HiDive) and some fansub encodes.
       val unknownLangCodes = setOf("", "und", "zxx")
       val dialogueTitleKeywords = listOf(
         "subtitle", "subtitles", "full subtitle", "full sub",
@@ -367,8 +393,6 @@ class TrackSelector(
       }
 
       // PASS E: SINGLE CLEAN TRACK FALLBACK
-      // If only one non-signs/non-SDH subtitle track exists regardless of language,
-      // it is almost certainly the intended dialogue track. Select it.
       val cleanSubTracks = subTracks.filter {
         ignoreSubs.none { kw -> it.title.contains(kw) } && !it.forced && !it.hearing
       }
@@ -387,5 +411,3 @@ class TrackSelector(
       Log.e(TAG, "Subtitle selection failed", e)
     }
   }
-}
-
