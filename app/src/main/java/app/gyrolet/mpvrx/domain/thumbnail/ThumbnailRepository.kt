@@ -8,6 +8,8 @@ import android.media.MediaMetadataRetriever
 import android.os.Build
 import android.util.LruCache
 import app.gyrolet.mpvrx.domain.media.model.Video
+import app.gyrolet.mpvrx.domain.network.NetworkConnection
+import app.gyrolet.mpvrx.ui.browser.networkstreaming.proxy.NetworkStreamingProxy
 import coil3.ImageLoader
 import coil3.request.ImageRequest
 import coil3.request.SuccessResult
@@ -26,10 +28,9 @@ import kotlinx.coroutines.withContext
 import org.koin.java.KoinJavaComponent
 import java.io.File
 import java.security.MessageDigest
-import java.util.concurrent.ConcurrentHashMap
-import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
+import java.util.concurrent.ConcurrentHashMap
 
 class ThumbnailRepository(
   private val context: Context,
@@ -197,6 +198,8 @@ class ThumbnailRepository(
 
     imageLoader.memoryCache?.clear()
     imageLoader.diskCache?.clear()
+    runCatching { File(context.cacheDir, "thumbnails").deleteRecursively() }
+    runCatching { File(context.filesDir, "thumbnails").deleteRecursively() }
   }
 
   fun startFolderThumbnailGeneration(
@@ -412,7 +415,7 @@ class ThumbnailRepository(
             is ThumbnailStrategy.FrameAtPercentage -> getFrameAt(retriever, timeUs, targetWidth, targetHeight)
             is ThumbnailStrategy.Hybrid -> {
               val first = getFrameAt(retriever, 0L, targetWidth, targetHeight) ?: return@runCatching null
-              if (isMostlySolid(first)) {
+              if (isMostlySolidThumbnail(first)) {
                 first.recycle()
                 getFrameAt(retriever, frameTimeMicros(retriever, strategy.percentage), targetWidth, targetHeight)
               } else {
@@ -422,7 +425,7 @@ class ThumbnailRepository(
             is ThumbnailStrategy.EmbeddedOrHybrid ->
               embeddedPicture?.also { shouldRotate = false } ?: run {
                 val first = getFrameAt(retriever, 0L, targetWidth, targetHeight) ?: return@runCatching null
-                if (isMostlySolid(first)) {
+                if (isMostlySolidThumbnail(first)) {
                   first.recycle()
                   getFrameAt(retriever, frameTimeMicros(retriever, strategy.percentage), targetWidth, targetHeight)
                 } else {
@@ -491,75 +494,26 @@ class ThumbnailRepository(
       "Accept" to "*/*",
     )
 
-  private fun isMostlySolid(
-    bitmap: Bitmap,
-    threshold: Float = 0.7f,
-  ): Boolean {
-    val width = bitmap.width
-    val height = bitmap.height
-    if (width <= 0 || height <= 0) {
-      return false
-    }
-
-    val marginX = width / 10
-    val marginY = height / 10
-    val sampleAreaRight = width - marginX
-    val sampleAreaBottom = height - marginY
-    val gridSize = 10
-    val stepX = (sampleAreaRight - marginX) / gridSize
-    val stepY = (sampleAreaBottom - marginY) / gridSize
-
-    if (stepX <= 0 || stepY <= 0) {
-      return false
-    }
-
-    val sampledColors = ArrayList<Int>(gridSize * gridSize)
-    for (x in 0 until gridSize) {
-      for (y in 0 until gridSize) {
-        val pixelX = marginX + x * stepX
-        val pixelY = marginY + y * stepY
-        if (pixelX in 0 until width && pixelY in 0 until height) {
-          sampledColors += bitmap.getPixel(pixelX, pixelY)
-        }
-      }
-    }
-
-    if (sampledColors.isEmpty()) {
-      return false
-    }
-
-    val referenceColor = sampledColors.first()
-    val referenceR = (referenceColor shr 16) and 0xFF
-    val referenceG = (referenceColor shr 8) and 0xFF
-    val referenceB = referenceColor and 0xFF
-    val tolerance = 30
-
-    val similarCount =
-      sampledColors.count { color ->
-        val r = (color shr 16) and 0xFF
-        val g = (color shr 8) and 0xFF
-        val b = color and 0xFF
-
-        abs(r - referenceR) <= tolerance &&
-          abs(g - referenceG) <= tolerance &&
-          abs(b - referenceB) <= tolerance
-      }
-
-    return similarCount.toFloat() / sampledColors.size >= threshold
-  }
-
   /**
    * Retrieve a thumbnail for a raw network file path (for use from [NetworkVideoCard]).
-   * Only works for HTTP/HTTPS URLs — other protocols return null.
+   * For HTTP/HTTPS URLs, uses [MediaMetadataRetriever]'s built-in HTTP streaming.
+   * For other protocols (SMB, FTP, WebDAV), uses [NetworkStreamingProxy] to create
+   * a local HTTP stream and then extracts the frame.
    * Respects the [showNetworkThumbnails] preference gate.
    */
   suspend fun getThumbnailForNetworkPath(
     path: String,
     widthPx: Int,
     heightPx: Int,
+    connection: NetworkConnection? = null,
   ): Bitmap? = withContext(Dispatchers.IO) {
     if (!appearancePreferences.showNetworkThumbnails.get()) return@withContext null
-    if (!isHttpUrl(path)) return@withContext null
+
+    // For non-HTTP paths (SMB, FTP, WebDAV), use the proxy to create a local HTTP stream
+    if (!isHttpUrl(path)) {
+      if (connection == null) return@withContext null
+      return@withContext getNonHttpNetworkThumbnail(path, connection, widthPx, heightPx)
+    }
 
     // Check if this network URL has previously failed all extraction strategies
     val videoKey = path.hashCode().toString()
@@ -618,6 +572,95 @@ class ThumbnailRepository(
     synchronized(memoryCache) { memoryCache.put(memKey, bitmap) }
     _thumbnailReadyKeys.tryEmit(memKey)
     bitmap
+  }
+
+  private suspend fun getNonHttpNetworkThumbnail(
+    path: String,
+    connection: NetworkConnection,
+    widthPx: Int,
+    heightPx: Int,
+  ): Bitmap? {
+    val videoKey = path.hashCode().toString()
+    if (networkThumbnailFailed.containsKey(videoKey)) {
+      android.util.Log.d("ThumbnailRepository", "Skipping network thumbnail (previously failed): $path")
+      return null
+    }
+
+    val memKey = "$path|network|$widthPx|$heightPx|${thumbnailModeKey()}"
+    val diskKey = "video-thumb|$path|network|${thumbnailModeKey()}"
+
+    // Memory cache hit
+    synchronized(memoryCache) { memoryCache.get(memKey) }?.let { return it }
+
+    // Disk cache hit
+    imageLoader.diskCache?.openSnapshot(diskKey)?.use { snapshot ->
+      BitmapFactory.decodeStream(snapshot.data.toFile().inputStream())?.let { bmp ->
+        val scaled = scaleBitmap(bmp, widthPx, heightPx)
+        synchronized(memoryCache) { memoryCache.put(memKey, scaled) }
+        return scaled
+      }
+    }
+
+    val strategy =
+      browserPreferences.thumbnailMode.get().toThumbnailStrategy(
+        browserPreferences.thumbnailFramePosition.get(),
+      )
+
+    val bitmap =
+      extractNetworkVideoFrameViaProxy(path, connection, strategy, widthPx, heightPx)
+        ?.let { scaleBitmap(it, widthPx, heightPx) }
+
+    if (bitmap == null) {
+      android.util.Log.w("ThumbnailRepository", "All strategies failed for network path $path")
+      networkThumbnailFailed[videoKey] = true
+      return null
+    }
+
+    // Write to disk cache
+    imageLoader.diskCache?.openEditor(diskKey)?.let { editor ->
+      try {
+        editor.data.toFile().outputStream().use { out ->
+          bitmap.compress(Bitmap.CompressFormat.JPEG, 80, out)
+        }
+        editor.commit()
+      } catch (_: Exception) {
+        runCatching { editor.abort() }
+      }
+    }
+
+    synchronized(memoryCache) { memoryCache.put(memKey, bitmap) }
+    _thumbnailReadyKeys.tryEmit(memKey)
+    return bitmap
+  }
+
+  private fun extractNetworkVideoFrameViaProxy(
+    path: String,
+    connection: NetworkConnection,
+    strategy: ThumbnailStrategy,
+    targetWidth: Int,
+    targetHeight: Int,
+  ): Bitmap? {
+    val proxy = NetworkStreamingProxy.getInstance()
+    val streamId = "thumb_${path.hashCode()}_${System.nanoTime()}"
+
+    return try {
+      val localUrl = proxy.registerStream(
+        streamId = streamId,
+        connection = connection,
+        filePath = path,
+      )
+
+      extractNetworkVideoFrame(
+        url = localUrl,
+        strategy = strategy,
+        targetWidth = targetWidth.takeIf { it > 0 },
+        targetHeight = targetHeight.takeIf { it > 0 },
+      )
+    } catch (_: Exception) {
+      null
+    } finally {
+      proxy.unregisterStream(streamId)
+    }
   }
 
   /** The memory-cache key used by [getThumbnailForNetworkPath]. */

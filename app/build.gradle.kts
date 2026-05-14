@@ -13,14 +13,14 @@ plugins {
 
 android {
   namespace = "app.gyrolet.mpvrx"
-  compileSdk = 36
+  compileSdk = 37
 
   defaultConfig {
     applicationId = "app.gyrolet.mpvrx"
     minSdk = 26
     targetSdk = 36
-    versionCode = 133
-    versionName = "1.3.3"
+    versionCode = 134
+    versionName = "1.3.4"
 
     vectorDrawables {
       useSupportLibrary = true
@@ -152,7 +152,6 @@ androidComponents {
 kotlin {
   compilerOptions {
     freeCompilerArgs.addAll(
-      "-Xwhen-guards",
       "-Xcontext-parameters",
       "-Xannotation-default-target=param-property",
       "-opt-in=com.google.accompanist.permissions.ExperimentalPermissionsApi",
@@ -266,7 +265,7 @@ dependencies {
   implementation(libs.sora.language.textmate)
   // implementation(libs.sora.oniguruma.native)
 
-  coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
+  coreLibraryDesugaring(libs.desugar.jdk.libs)
 
   implementation(libs.truetype.parser)
   implementation(libs.fsaf)
