@@ -423,7 +423,8 @@ class PlayerViewModel(
     // which would otherwise manifest as dropped frames and accelerated battery drain.
     viewModelScope.launch(playbackStateDispatcher) {
       while (isActive) {
-        if (paused == false) {
+        val isPaused = runCatching { paused == true }.getOrDefault(true)
+        if (!isPaused) {
           val newHeadroom = ThermalMonitor.getHeadroom(host.context)
           if (kotlin.math.abs(newHeadroom - thermalHeadroom) > 0.08f) {
             thermalHeadroom = newHeadroom
@@ -458,7 +459,6 @@ class PlayerViewModel(
                     updateAmbientStretch()
                 }
             }
-            // --------------------------------------------------------
         }
       }
     }
