@@ -4031,16 +4031,21 @@ fun <T> Flow<T>.collectAsState(
   @Volatile private var value: T? = initialValue
 
   init {
-    scope.launch { collect { value = it } }
+    scope.launch {
+      runCatching {
+        collect { value = it }
+      }.onFailure { e ->
+        // Flow destruido (MPV shutdown) — mantener último valor conocido
+      }
+    }
   }
 
   override fun getValue(
     thisRef: Any?,
     property: KProperty<*>,
-  ) = value
-}
-
-private fun String.md5(): String {
-  val digest = MessageDigest.getInstance("MD5").digest(toByteArray())
-  return digest.joinToString("") { byte -> "%02x".format(byte) }
+  ): T? = try {
+    value
+  } catch (e: NullPointerException) {
+    initialValue
+  }
 }
