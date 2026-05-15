@@ -1539,9 +1539,14 @@ fun PlayerControls(
       },
       chapter = chapters.getOrNull(currentChapter ?: 0),
       chapters = chapters.toImmutableList(),
-      onSeekToChapter = {
-        MPVLib.setPropertyInt("chapter", it)
-        viewModel.unpause()
+      onSeekToChapter = { index ->
+          val chapterStart = chapters.getOrNull(index)?.start?.toDouble()
+          if (chapterStart != null) {
+              MPVLib.setPropertyDouble("time-pos", chapterStart + 0.1)
+          } else {
+              MPVLib.setPropertyInt("chapter", index)
+          }
+          viewModel.unpause()
       },
       decoder = decoder,
       onUpdateDecoder = { MPVLib.setPropertyString("hwdec", it.value) },
