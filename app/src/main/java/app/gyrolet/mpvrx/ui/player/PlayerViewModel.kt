@@ -768,6 +768,8 @@ class PlayerViewModel(
     // Resetear posición y duración inmediatamente al empezar a cargar
     _precisePosition.value = 0f
     _preciseDuration.value = 0f
+    runCatching { MPVLib.setPropertyInt("time-pos", 0) }
+    runCatching { MPVLib.setPropertyDouble("time-pos", 0.0) }
 
     _videoOpenAnimationState.update {
         it.copy(
