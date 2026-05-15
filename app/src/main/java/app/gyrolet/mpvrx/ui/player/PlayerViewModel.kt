@@ -765,11 +765,15 @@ class PlayerViewModel(
   }
 
   fun onVideoLoadStarted() {
+    // Resetear posición y duración inmediatamente al empezar a cargar
+    _precisePosition.value = 0f
+    _preciseDuration.value = 0f
+
     _videoOpenAnimationState.update {
-      it.copy(
-        loadToken = it.loadToken + 1,
-        isWaitingForVideo = true,
-      )
+        it.copy(
+            loadToken = it.loadToken + 1,
+            isWaitingForVideo = true,
+        )
     }
   }
 
