@@ -1264,9 +1264,9 @@ fun PlayerControls(
           val seekbarStyle by appearancePreferences.seekbarStyle.collectAsState()
 
           SeekbarWithTimers(
-            position = precisePosition,
-            duration = if (preciseDuration > 0) preciseDuration else duration?.toFloat() ?: 0f,
-            readAheadValue = if (preciseDuration > 0) precisePosition + (demuxerCacheDuration ?: 0f) else 0f,
+              position = if (preciseDuration > 0) precisePosition else 0f,
+              duration = if (preciseDuration > 0) preciseDuration else duration?.toFloat() ?: 0f,
+              readAheadValue = if (preciseDuration > 0) precisePosition + (demuxerCacheDuration ?: 0f) else 0f,
             onValueChange = {
               isSeeking = true
               resetControlsTimestamp = System.currentTimeMillis()
