@@ -1266,7 +1266,7 @@ fun PlayerControls(
           SeekbarWithTimers(
             position = precisePosition,
             duration = if (preciseDuration > 0) preciseDuration else duration?.toFloat() ?: 0f,
-            readAheadValue = precisePosition + (demuxerCacheDuration ?: 0f),
+            readAheadValue = if (preciseDuration > 0) precisePosition + (demuxerCacheDuration ?: 0f) else 0f,
             onValueChange = {
               isSeeking = true
               resetControlsTimestamp = System.currentTimeMillis()
