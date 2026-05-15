@@ -4049,3 +4049,8 @@ fun <T> Flow<T>.collectAsState(
     initialValue
   }
 }
+
+private fun String.md5(): String {
+  val digest = MessageDigest.getInstance("MD5").digest(toByteArray())
+  return digest.joinToString("") { byte -> "%02x".format(byte) }
+}
