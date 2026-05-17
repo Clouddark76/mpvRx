@@ -13,14 +13,14 @@ plugins {
 
 android {
   namespace = "app.gyrolet.mpvrx"
-  compileSdk = 36
+  compileSdk = 37
 
   defaultConfig {
     applicationId = "app.gyrolet.mpvrx"
     minSdk = 26
     targetSdk = 36
-    versionCode = 133
-    versionName = "1.3.3"
+    versionCode = 134
+    versionName = "1.3.4"
 
     vectorDrawables {
       useSupportLibrary = true
