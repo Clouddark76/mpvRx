@@ -1,7 +1,5 @@
 import com.android.build.api.variant.FilterConfiguration
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
-import java.net.URL
-import groovy.json.JsonSlurper
 
 val enableX86 = project.findProperty("enableX86") != "false"
 val x86Abis = if (enableX86) listOf("x86", "x86_64") else emptyList()
@@ -178,54 +176,6 @@ room {
   schemaDirectory("$projectDir/schemas")
 }
 
-/* -------------------------------------------------------------------------- */
-/* 🔥 MPV AAR — LATEST RELEASE AUTOMÁTICO (GitHub API)                         */
-/* -------------------------------------------------------------------------- */
-
-val mpvDir = layout.buildDirectory.dir("mpv")
-val mpvAar = mpvDir.map { it.file("mpv-latest.aar") }
-
-tasks.register("downloadMpvAar") {
-  outputs.file(mpvAar)
-
-  doLast {
-    val outFile = mpvAar.get().asFile
-    outFile.parentFile.mkdirs()
-
-    println("[MPV] Buscando latest release...")
-
-    val jsonText = URL(
-      "https://api.github.com/repos/Clouddark76/mpvlibAndroid/releases/latest"
-    ).readText()
-
-    val json = JsonSlurper().parseText(jsonText) as Map<*, *>
-    val assets = json["assets"] as List<*>
-
-    val aarAsset = assets
-      .map { it as Map<*, *> }
-      .firstOrNull { (it["name"] as String).endsWith(".aar") }
-      ?: error("No se encontró ningún .aar en el latest release")
-
-    val downloadUrl = aarAsset["browser_download_url"] as String
-
-    println("[MPV] Descargando: $downloadUrl")
-
-    URL(downloadUrl).openStream().use { input ->
-      outFile.outputStream().use { output ->
-        input.copyTo(output)
-      }
-    }
-
-    println("[MPV] AAR listo en: ${outFile.absolutePath}")
-  }
-}
-
-tasks.named("preBuild") {
-  dependsOn("downloadMpvAar")
-}
-
-/* -------------------------------------------------------------------------- */
-
 dependencies {
   implementation(libs.androidx.activity.compose)
   implementation(platform(libs.androidx.compose.bom))
@@ -280,6 +230,7 @@ dependencies {
   implementation(libs.mediainfo.lib)
   implementation("com.llamatik:library:1.4.0")
   
+  implementation(files("libs/mpvlib.aar"))
 
   // Network protocol libraries
   implementation(libs.smbj)
@@ -302,7 +253,8 @@ fun getCommitSha(): String =
 
 fun runCommand(command: String): String? =
   try {
-    val process = ProcessBuilder(command.split(' '))
+    val parts = command.split(' ')
+    val process = ProcessBuilder(parts)
       .redirectErrorStream(true)
       .start()
 
@@ -313,12 +265,6 @@ fun runCommand(command: String): String? =
 
     process.waitFor()
     output.ifEmpty { null }
-  } catch (_: Exception) {
+  } catch (e: Exception) {
     null
   }
-
-tasks.register("printVersionName") {
-  doLast {
-    println(android.defaultConfig.versionName)
-  }
-}
