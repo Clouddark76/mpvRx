@@ -90,15 +90,12 @@ jobs:
             WORK_DIR=$(mktemp -d)
             cp "$apk" "$WORK_DIR/original.apk"
 
-            DELETE_ARGS=()
+            cd "$WORK_DIR"
             for dir in "${ALL_PY_DIRS[@]}"; do
               if [ "$dir" != "$keep" ]; then
-                DELETE_ARGS+=("$dir/")
+                zip -d original.apk "${dir}/*" || true
               fi
             done
-
-            cd "$WORK_DIR"
-            zip -d original.apk "${DELETE_ARGS[@]}" || true
             cd - > /dev/null
 
             cp "$WORK_DIR/original.apk" "$apk"
