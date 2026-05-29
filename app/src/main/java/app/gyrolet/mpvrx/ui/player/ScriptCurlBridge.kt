@@ -189,7 +189,7 @@ class ScriptCurlBridge(
                 val rawBody = response.body?.byteStream()?.let { stream ->
                     val buffer = ByteArray(MAX_RESPONSE_BODY_BYTES + 1)
                     var totalRead = 0
-                    var bytesRead: 0
+                    var bytesRead = 0
                     while (totalRead <= MAX_RESPONSE_BODY_BYTES &&
                         stream.read(buffer, totalRead, buffer.size - totalRead).also { bytesRead = it } != -1
                     ) {
