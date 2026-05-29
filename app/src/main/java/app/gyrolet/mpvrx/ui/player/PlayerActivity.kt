@@ -90,7 +90,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.koin.android.ext.android.inject
 import java.io.File
-import java.net.URLDecoder
 
 private enum class BackgroundPlaybackStartResult {
   Started,
@@ -127,39 +126,6 @@ class PlayerActivity :
   private val viewModel: PlayerViewModel by viewModels<PlayerViewModel> {
     PlayerViewModelProviderFactory(this)
   }
-
-   /**
- * Decodes the filename portion of localhost URLs to handle URL-encoded characters.
- */ 
-   private fun decodeLocalhostUrl(url: String): String {
-      // Only process localhost/127.0.0.1 URLs
-      if (!url.startsWith("http://127.0.0.1") && !url.startsWith("http://localhost")) {
-          return url
-      }
-
-      return try {
-          val lastSlash = url.lastIndexOf('/')
-          if (lastSlash == -1 || lastSlash == url.length - 1) {
-              // No filename part to decode
-              url
-          } else {
-              // Split into path + filename, decode only the filename
-              val pathPart = url.substring(0, lastSlash + 1)
-              val filename = url.substring(lastSlash + 1)
-              val decodedFilename = URLDecoder.decode(filename, "UTF-8")
-
-              // Re-encode problematic characters that break URLs
-              val safeFilename = decodedFilename
-                  .replace("#", "%23")  // # must stay encoded as it's a fragment identifier
-                  .replace("?", "%3F")  // ? starts query parameters
-
-              pathPart + safeFilename
-          }
-      } catch (e: Exception) {
-          Log.w(TAG, "Failed to decode localhost URL filename: $url", e)
-          url
-      }
-   }
 
   /**
    * Binding for the player layout.
@@ -1918,29 +1884,22 @@ class PlayerActivity :
   }
 
   /**
- * Parses the file path from the intent, handling URL decoding for localhost URLs.
- *
- * This method checks the intent action and data to determine the file path.
- * It supports the following actions:
- * - ACTION_VIEW: The file path is contained in the intent data.
- * - ACTION_SEND: The file path is contained in the intent extras.
- *
- * For localhost URLs (network files served through local proxy), it decodes
- * the filename portion to handle special characters properly.
- *
- * @param intent The intent containing the file URI
- * @return The resolved file path with decoded filename if applicable, or null if not found
- */
-  private fun parsePathFromIntent(intent: Intent): String? {
-      val filepath = when (intent.action) {
-          Intent.ACTION_VIEW -> intent.data?.resolveUri(this)
-          Intent.ACTION_SEND -> parsePathFromSendIntent(intent)
-          else -> intent.getStringExtra("uri")
-      }
-
-      // Decode localhost URLs to handle special characters in filenames
-      return filepath?.let { decodeLocalhostUrl(it) }
-  }
+   * Parses the file path from the intent.
+   *
+   * This method checks the intent action and data to determine the file path.
+   * It supports the following actions:
+   * - ACTION_VIEW: The file path is contained in the intent data.
+   * - ACTION_SEND: The file path is contained in the intent extras.
+   *
+   * @param intent The intent containing the file URI
+   * @return The resolved file path, or null if not found
+   */
+  private fun parsePathFromIntent(intent: Intent): String? =
+    when (intent.action) {
+      Intent.ACTION_VIEW -> intent.data?.resolveUri(this)
+      Intent.ACTION_SEND -> parsePathFromSendIntent(intent)
+      else -> intent.getStringExtra("uri")
+    }
 
   /**
    * Parses the file path from a SEND intent.
@@ -3338,27 +3297,31 @@ class PlayerActivity :
         viewModel.sheetShown.value == Sheets.AudioTracks
     val isNoSheetOpen = viewModel.sheetShown.value == Sheets.None
 
+    // If any modifier keys are pressed, delegate to MPVView for proper modifier handling
+    val modifierEvent = event?.takeIf {
+      it.isShiftPressed || it.isCtrlPressed || it.isAltPressed || it.isMetaPressed
+    }
+    val hasModifiers = modifierEvent != null
+
     when (keyCode) {
       KeyEvent.KEYCODE_DPAD_UP -> {
-          // Navega al siguiente capítulo, o salta +30s si no hay capítulos
-          if (!seekToNextChapter()) {
-              viewModel.seekBy(30)
-          }
+        if (hasModifiers) {
+          player.onKey(modifierEvent)
           return true
-      }
-
-      KeyEvent.KEYCODE_DPAD_DOWN -> {
-          // Navega al capítulo anterior, o salta -30s si no hay capítulos
-          if (!seekToPreviousChapter()) {
-              viewModel.seekBy(-30)
-          }
-          return true
+        }
+        return super.onKeyDown(keyCode, event)
       }
 
       KeyEvent.KEYCODE_DPAD_DOWN,
       KeyEvent.KEYCODE_DPAD_RIGHT,
       KeyEvent.KEYCODE_DPAD_LEFT,
         -> {
+        // If modifiers are pressed, delegate to MPVView for proper handling (e.g. sub-step)
+        if (hasModifiers) {
+          player.onKey(modifierEvent)
+          return true
+        }
+
         if (isTrackSheetOpen) {
           return super.onKeyDown(keyCode, event)
         }
@@ -3380,18 +3343,21 @@ class PlayerActivity :
       }
 
       KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+        if (hasModifiers) {
+          player.onKey(modifierEvent)
+          return true
+        }
         if (isTrackSheetOpen) {
           return super.onKeyDown(keyCode, event)
-        }
-        // Center/Enter para play/pause
-        if (isNoSheetOpen) {
-          viewModel.pauseUnpause()
-          return true
         }
         return super.onKeyDown(keyCode, event)
       }
 
       KeyEvent.KEYCODE_SPACE -> {
+        if (hasModifiers) {
+          player.onKey(modifierEvent)
+          return true
+        }
         viewModel.pauseUnpause()
         return true
       }
@@ -3410,21 +3376,6 @@ class PlayerActivity :
 
       KeyEvent.KEYCODE_MEDIA_STOP -> {
         finishAndRemoveTask()
-        return true
-      }
-
-      KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
-        viewModel.pauseUnpause()
-        return true
-      }
-
-      KeyEvent.KEYCODE_MEDIA_PLAY -> {
-        viewModel.unpause()
-        return true
-      }
-
-      KeyEvent.KEYCODE_MEDIA_PAUSE -> {
-        viewModel.pause()
         return true
       }
 
@@ -3452,15 +3403,14 @@ class PlayerActivity :
    * @param event The key event
    * @return true if event was handled, false otherwise
    */
-  override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
-      // No pasar DPAD_CENTER/ENTER a MPV para evitar doble acción
-      if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
-          return true
-      }
-      event?.let {
-          if (player.onKey(it)) return true
-      }
-      return super.onKeyUp(keyCode, event)
+  override fun onKeyUp(
+    keyCode: Int,
+    event: KeyEvent?,
+  ): Boolean {
+    event?.let {
+      if (player.onKey(it)) return true
+    }
+    return super.onKeyUp(keyCode, event)
   }
 
   // ==================== System UI Management ====================
@@ -3807,39 +3757,6 @@ class PlayerActivity :
     }
   }
 
-/**
-   * Navega al siguiente capítulo. Retorna true si había capítulo disponible.
-   */
-  private fun seekToNextChapter(): Boolean {
-      val chapters = viewModel.chapters.value
-      if (chapters.isEmpty()) return false
-      val currentPos = (viewModel.pos ?: 0).toDouble()
-      val nextIndex = chapters.indexOfFirst { it.start > currentPos + 0.5 }
-      if (nextIndex == -1) return false
-      val next = chapters[nextIndex]
-      viewModel.seekTo(next.start.toInt())
-      // Mostrar nombre del capítulo (Segment usa 'name' como label)
-      val chapterName = next.name.ifBlank { "Chapter ${nextIndex + 1}" }
-      viewModel.playerUpdate.value = PlayerUpdates.ShowText("▶ $chapterName")
-      return true
-  }
-
-  /**
-   * Navega al capítulo anterior. Retorna true si había capítulo disponible.
-   */
-  private fun seekToPreviousChapter(): Boolean {
-      val chapters = viewModel.chapters.value
-      if (chapters.isEmpty()) return false
-      val currentPos = (viewModel.pos ?: 0).toDouble()
-      val prevIndex = chapters.indexOfLast { it.start < currentPos - 3.0 }
-      if (prevIndex == -1) return false
-      val prev = chapters[prevIndex]
-      viewModel.seekTo(prev.start.toInt())
-      val chapterName = prev.name.ifBlank { "Chapter ${prevIndex + 1}" }
-      viewModel.playerUpdate.value = PlayerUpdates.ShowText("◀ $chapterName")
-      return true
-  }
- 
   /**
    * Check if there's a previous video in the playlist
    */
