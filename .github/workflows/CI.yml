@@ -57,6 +57,57 @@ jobs:
           echo "APK output files:"
           ls -lah "$STD_DIR"
 
+      # ───────────── STRIP PY ASSETS ─────────────
+      - name: Strip cross-ABI py assets from each APK
+        run: |
+          set -e
+          STD_DIR="app/build/outputs/apk/standard/release"
+
+          declare -A ABI_KEEP=(
+            ["universal"]=""
+            ["arm64-v8a"]="assets/py.arm64-v8a"
+            ["armeabi-v7a"]="assets/py.armeabi-v7a"
+            ["x86"]="assets/py.x86"
+            ["x86_64"]="assets/py.x86_64"
+          )
+
+          ALL_PY_DIRS=("assets/py.arm64-v8a" "assets/py.armeabi-v7a" "assets/py.x86" "assets/py.x86_64")
+
+          for abi in "${!ABI_KEEP[@]}"; do
+            apk=$(find "$STD_DIR" \( -name "app-standard-${abi}-release-unsigned.apk" -o \
+                                     -name "app-standard-${abi}-release.apk" \) | head -1)
+            [ -z "$apk" ] && { echo "[$abi] No APK found, skipping."; continue; }
+
+            keep="${ABI_KEEP[$abi]}"
+
+            if [ -z "$keep" ]; then
+              echo "[$abi] Universal — keeping all py assets."
+              continue
+            fi
+
+            echo "[$abi] Stripping py assets, keeping only: $keep"
+
+            WORK_DIR=$(mktemp -d)
+            cp "$apk" "$WORK_DIR/original.apk"
+
+            DELETE_ARGS=()
+            for dir in "${ALL_PY_DIRS[@]}"; do
+              if [ "$dir" != "$keep" ]; then
+                DELETE_ARGS+=("$dir/")
+              fi
+            done
+
+            cd "$WORK_DIR"
+            zip -d original.apk "${DELETE_ARGS[@]}" || true
+            cd - > /dev/null
+
+            cp "$WORK_DIR/original.apk" "$apk"
+            rm -rf "$WORK_DIR"
+
+            echo "[$abi] Done. Remaining py entries:"
+            unzip -l "$apk" | grep "assets/py\." || echo "  (none)"
+          done
+
       # ───────────── SIGN ─────────────
       - name: Sign APKs
         run: |
