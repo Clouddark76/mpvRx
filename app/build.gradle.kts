@@ -1,7 +1,6 @@
 import com.android.build.api.variant.FilterConfiguration
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import java.net.URL
-import groovy.json.JsonSlurper
 
 val enableX86 = project.findProperty("enableX86") != "false"
 val x86Abis = if (enableX86) listOf("x86", "x86_64") else emptyList()
@@ -198,15 +197,10 @@ tasks.register("downloadMpvAar") {
       "https://api.github.com/repos/Clouddark76/mpvlibAndroid/releases/latest"
     ).readText()
 
-    val json = JsonSlurper().parseText(jsonText) as Map<*, *>
-    val assets = json["assets"] as List<*>
-
-    val aarAsset = assets
-      .map { it as Map<*, *> }
-      .firstOrNull { (it["name"] as String).endsWith(".aar") }
+    val downloadUrl = Regex(""""browser_download_url"\s*:\s*"([^"]+\.aar)"""")
+      .find(jsonText)
+      ?.groupValues?.get(1)
       ?: error("No se encontró ningún .aar en el latest release")
-
-    val downloadUrl = aarAsset["browser_download_url"] as String
 
     println("[MPV] Descargando: $downloadUrl")
 
@@ -279,7 +273,9 @@ dependencies {
   implementation(libs.fsaf)
   implementation(libs.mediainfo.lib)
   implementation("com.llamatik:library:1.4.0")
-  
+
+  // MPV AAR descargado automáticamente desde GitHub
+  implementation(files(mpvAar))
 
   // Network protocol libraries
   implementation(libs.smbj)
