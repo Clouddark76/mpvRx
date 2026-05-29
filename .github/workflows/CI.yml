@@ -9,18 +9,26 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # ───────────── CHECKOUT ─────────────
       - name: Checkout repo
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
           ref: ${{ github.ref }}
 
+      # ───────────── SHA ─────────────
+      - name: Generate short SHA
+        run: echo "SHORT_SHA=${GITHUB_SHA:0:7}" >> $GITHUB_ENV
+
+      # ───────────── JAVA ─────────────
       - name: Setup JDK 17
         uses: actions/setup-java@v5
         with:
-          distribution: 'adopt'
+          distribution: adopt
           java-version: 17
+          cache: gradle
 
+      # ───────────── GRADLE ─────────────
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
@@ -39,11 +47,14 @@ jobs:
       - name: Verify build output
         run: |
           STD_DIR="app/build/outputs/apk/standard/release"
+
           if [ ! -d "$STD_DIR" ]; then
             echo "Standard release directory does not exist!"
             find app/build/outputs -name "*.apk" -type f
             exit 1
           fi
+
+          echo "APK output files:"
           ls -lah "$STD_DIR"
 
       # ───────────── SIGN ─────────────
@@ -52,10 +63,17 @@ jobs:
           set -e
           STD_DIR="app/build/outputs/apk/standard/release"
 
+          if [ -z "${{ secrets.SIGNING_KEYSTORE }}" ]; then
+            echo "SIGNING_KEYSTORE secret is not available. Skipping signing step."
+            exit 0
+          fi
+
           echo "${{ secrets.SIGNING_KEYSTORE }}" | base64 -d > release.keystore
 
           find "$STD_DIR" -name "app-standard-*-release-unsigned.apk" -type f | while read -r apk; do
             signed="${apk/-unsigned/}"
+
+            echo "Signing: $apk"
 
             $ANDROID_HOME/build-tools/34.0.0/apksigner sign \
               --ks release.keystore \
@@ -65,18 +83,26 @@ jobs:
               --out "$signed" \
               "$apk"
 
+            echo "Verifying: $signed"
+
             $ANDROID_HOME/build-tools/34.0.0/apksigner verify "$signed"
+
             rm "$apk"
           done
 
           rm release.keystore
+
+          echo "Signed APKs:"
           ls -lh "$STD_DIR"/app-standard-*-release.apk
 
       # ───────────── RENAME ─────────────
       - name: Rename APKs
         run: |
           set -e
+
           VERSION="v${APP_VERSION}"
+          SHA="${SHORT_SHA}"
+
           STD_DIR="app/build/outputs/apk/standard/release"
 
           declare -A MAP=(
@@ -89,47 +115,61 @@ jobs:
 
           for abi in "${!MAP[@]}"; do
             src="$STD_DIR/${MAP[$abi]}"
-            dst="$STD_DIR/mpvRx-${abi}-${VERSION}.apk"
+            dst="$STD_DIR/mpvRx-${abi}-${VERSION}-${SHA}.apk"
 
-            [ -f "$src" ] || { echo "::error file=$src::Missing APK"; exit 1; }
+            if [ ! -f "$src" ]; then
+              echo "::error file=$src::Missing APK"
+              exit 1
+            fi
+
+            echo "Renaming:"
+            echo "  FROM: $src"
+            echo "  TO:   $dst"
+
             mv "$src" "$dst"
           done
 
+          echo "Final APKs:"
           ls -lh "$STD_DIR"/mpvRx-*.apk
 
-      # ───────────── ARTIFACTS (independientes) ─────────────
+      # ───────────── ARTIFACTS ─────────────
 
       - name: Upload Universal
         uses: actions/upload-artifact@v7
         with:
-          name: mpvRx-universal
-          path: app/build/outputs/apk/standard/release/mpvRx-universal-v${{ env.APP_VERSION }}.apk
+          name: mpvRx-universal-${{ env.SHORT_SHA }}
+          path: app/build/outputs/apk/standard/release/mpvRx-universal-v${{ env.APP_VERSION }}-${{ env.SHORT_SHA }}.apk
           retention-days: 90
+          if-no-files-found: error
 
       - name: Upload arm64-v8a
         uses: actions/upload-artifact@v7
         with:
-          name: mpvRx-arm64-v8a
-          path: app/build/outputs/apk/standard/release/mpvRx-arm64-v8a-v${{ env.APP_VERSION }}.apk
+          name: mpvRx-arm64-v8a-${{ env.SHORT_SHA }}
+          path: app/build/outputs/apk/standard/release/mpvRx-arm64-v8a-v${{ env.APP_VERSION }}-${{ env.SHORT_SHA }}.apk
           retention-days: 90
+          if-no-files-found: error
 
       - name: Upload armeabi-v7a
         uses: actions/upload-artifact@v7
         with:
-          name: mpvRx-armeabi-v7a
-          path: app/build/outputs/apk/standard/release/mpvRx-armeabi-v7a-v${{ env.APP_VERSION }}.apk
+          name: mpvRx-armeabi-v7a-${{ env.SHORT_SHA }}
+          path: app/build/outputs/apk/standard/release/mpvRx-armeabi-v7a-v${{ env.APP_VERSION }}-${{ env.SHORT_SHA }}.apk
           retention-days: 90
+          if-no-files-found: error
 
       - name: Upload x86
         uses: actions/upload-artifact@v7
         with:
-          name: mpvRx-x86
-          path: app/build/outputs/apk/standard/release/mpvRx-x86-v${{ env.APP_VERSION }}.apk
+          name: mpvRx-x86-${{ env.SHORT_SHA }}
+          path: app/build/outputs/apk/standard/release/mpvRx-x86-v${{ env.APP_VERSION }}-${{ env.SHORT_SHA }}.apk
           retention-days: 90
+          if-no-files-found: error
 
       - name: Upload x86_64
         uses: actions/upload-artifact@v7
         with:
-          name: mpvRx-x86_64
-          path: app/build/outputs/apk/standard/release/mpvRx-x86_64-v${{ env.APP_VERSION }}.apk
+          name: mpvRx-x86_64-${{ env.SHORT_SHA }}
+          path: app/build/outputs/apk/standard/release/mpvRx-x86_64-v${{ env.APP_VERSION }}-${{ env.SHORT_SHA }}.apk
           retention-days: 90
+          if-no-files-found: error
