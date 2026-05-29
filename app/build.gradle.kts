@@ -1,5 +1,7 @@
 import com.android.build.api.variant.FilterConfiguration
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.net.URL
+import groovy.json.JsonSlurper
 
 val enableX86 = project.findProperty("enableX86") != "false"
 val x86Abis = if (enableX86) listOf("x86", "x86_64") else emptyList()
