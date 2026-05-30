@@ -81,45 +81,64 @@ object LuaScriptsScreen : Screen {
     }
 
     fun shareScript(scriptName: String) {
-        if (mpvConfStorageLocation.isBlank()) {
-            Toast.makeText(context, "No storage location configured", Toast.LENGTH_SHORT).show()
+      if (mpvConfStorageLocation.isBlank()) {
+        Toast.makeText(context, "No storage location configured", Toast.LENGTH_SHORT).show()
+        return
+      }
+
+      runCatching {
+        val cacheFile = File(context.cacheDir, scriptName)
+
+        // Intento 1: path de archivo directo
+        val rootDir = File(mpvConfStorageLocation)
+        if (rootDir.exists() && rootDir.isDirectory && rootDir.canRead()) {
+          val scriptsDir = rootDir.listFiles()?.firstOrNull {
+            it.isDirectory && it.name.equals("scripts", ignoreCase = true)
+          } ?: rootDir
+          val scriptFile = scriptsDir.listFiles()?.firstOrNull {
+            it.isFile && it.name == scriptName
+          }
+          if (scriptFile != null && scriptFile.canRead()) {
+            scriptFile.copyTo(cacheFile, overwrite = true)
+          }
+        }
+
+        // Intento 2: fallback SAF
+        if (!cacheFile.exists() || cacheFile.length() == 0L) {
+          val tree = DocumentFile.fromTreeUri(context, mpvConfStorageLocation.toUri())
+          val scriptsDir = tree?.listFiles()?.firstOrNull {
+            it.isDirectory && it.name?.equals("scripts", ignoreCase = true) == true
+          } ?: tree
+          val scriptFile = scriptsDir?.listFiles()?.firstOrNull {
+            it.isFile && it.name == scriptName
+          }
+          if (scriptFile != null) {
+            context.contentResolver.openInputStream(scriptFile.uri)?.use { input ->
+              cacheFile.outputStream().use { output -> input.copyTo(output) }
+            }
+          } else {
+            Toast.makeText(context, "Script file not found", Toast.LENGTH_SHORT).show()
             return
+          }
         }
 
-        runCatching {
-            val rootDir = File(mpvConfStorageLocation)
-            val scriptsDir = rootDir.listFiles()?.firstOrNull {
-                it.isDirectory && it.name.equals("scripts", ignoreCase = true)
-            } ?: rootDir
+        val shareUri = FileProvider.getUriForFile(
+          context,
+          "${context.packageName}.provider",
+          cacheFile,
+        )
 
-            val scriptFile = scriptsDir.listFiles()?.firstOrNull {
-                it.isFile && it.name == scriptName
-            }
-
-            if (scriptFile != null) {
-                val cacheFile = File(context.cacheDir, scriptName)
-                scriptFile.copyTo(cacheFile, overwrite = true)
-
-                val shareUri = FileProvider.getUriForFile(
-                    context,
-                    "${context.packageName}.provider",
-                    cacheFile,
-                )
-
-                val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                    type = "text/plain"
-                    putExtra(Intent.EXTRA_STREAM, shareUri)
-                    putExtra(Intent.EXTRA_SUBJECT, scriptName)
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                }
-
-                context.startActivity(Intent.createChooser(shareIntent, "Share script"))
-            } else {
-                Toast.makeText(context, "Script file not found", Toast.LENGTH_SHORT).show()
-            }
-        }.onFailure { error ->
-            Toast.makeText(context, "Error sharing script: ${error.message}", Toast.LENGTH_LONG).show()
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+          type = "text/plain"
+          putExtra(Intent.EXTRA_STREAM, shareUri)
+          putExtra(Intent.EXTRA_SUBJECT, scriptName)
+          addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
+
+        context.startActivity(Intent.createChooser(shareIntent, "Share script"))
+      }.onFailure { error ->
+        Toast.makeText(context, "Error sharing script: ${error.message}", Toast.LENGTH_LONG).show()
+      }
     }
 
     Scaffold(
@@ -239,3 +258,4 @@ object LuaScriptsScreen : Screen {
     }
   }
 }
+
