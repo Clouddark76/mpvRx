@@ -81,55 +81,45 @@ object LuaScriptsScreen : Screen {
     }
 
     fun shareScript(scriptName: String) {
-      if (mpvConfStorageLocation.isBlank()) {
-        Toast.makeText(context, "No storage location configured", Toast.LENGTH_SHORT).show()
-        return
-      }
-
-      runCatching {
-        val tree = DocumentFile.fromTreeUri(context, mpvConfStorageLocation.toUri())
-        if (tree != null && tree.exists()) {
-          val scriptsDir =
-            tree.listFiles().firstOrNull {
-              it.isDirectory && it.name?.equals("scripts", ignoreCase = true) == true
-            } ?: tree
-
-          val scriptFile =
-            scriptsDir.listFiles().firstOrNull {
-              it.isFile && it.name == scriptName
-            }
-
-          if (scriptFile != null) {
-            val cacheFile = File(context.cacheDir, scriptName)
-            context.contentResolver.openInputStream(scriptFile.uri)?.use { input ->
-              cacheFile.outputStream().use { output ->
-                input.copyTo(output)
-              }
-            }
-
-            val shareUri =
-              FileProvider.getUriForFile(
-                context,
-                "${context.packageName}.provider",
-                cacheFile,
-              )
-
-            val shareIntent =
-              Intent(Intent.ACTION_SEND).apply {
-                type = "text/plain"
-                putExtra(Intent.EXTRA_STREAM, shareUri)
-                putExtra(Intent.EXTRA_SUBJECT, scriptName)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-              }
-
-            context.startActivity(Intent.createChooser(shareIntent, "Share script"))
-          } else {
-            Toast.makeText(context, "Script file not found", Toast.LENGTH_SHORT).show()
-          }
+        if (mpvConfStorageLocation.isBlank()) {
+            Toast.makeText(context, "No storage location configured", Toast.LENGTH_SHORT).show()
+            return
         }
-      }.onFailure { error ->
-        Toast.makeText(context, "Error sharing script: ${error.message}", Toast.LENGTH_LONG).show()
-      }
+
+        runCatching {
+            val rootDir = File(mpvConfStorageLocation)
+            val scriptsDir = rootDir.listFiles()?.firstOrNull {
+                it.isDirectory && it.name.equals("scripts", ignoreCase = true)
+            } ?: rootDir
+
+            val scriptFile = scriptsDir.listFiles()?.firstOrNull {
+                it.isFile && it.name == scriptName
+            }
+
+            if (scriptFile != null) {
+                val cacheFile = File(context.cacheDir, scriptName)
+                scriptFile.copyTo(cacheFile, overwrite = true)
+
+                val shareUri = FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.provider",
+                    cacheFile,
+                )
+
+                val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_STREAM, shareUri)
+                    putExtra(Intent.EXTRA_SUBJECT, scriptName)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+
+                context.startActivity(Intent.createChooser(shareIntent, "Share script"))
+            } else {
+                Toast.makeText(context, "Script file not found", Toast.LENGTH_SHORT).show()
+            }
+        }.onFailure { error ->
+            Toast.makeText(context, "Error sharing script: ${error.message}", Toast.LENGTH_LONG).show()
+        }
     }
 
     Scaffold(
@@ -249,4 +239,3 @@ object LuaScriptsScreen : Screen {
     }
   }
 }
-
