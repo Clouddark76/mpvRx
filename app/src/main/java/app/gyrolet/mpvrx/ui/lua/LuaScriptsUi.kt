@@ -46,7 +46,6 @@ data class LuaScriptsCatalogState(
 )
 
 @Composable
-@Composable
 fun rememberLuaScriptsCatalog(
   storageUri: String,
   selectedScripts: Set<String>,
