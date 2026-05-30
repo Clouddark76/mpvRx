@@ -21,7 +21,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
-
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -63,7 +62,7 @@ import kotlin.io.path.readLines
 data class LuaScriptEditorScreen(
   val scriptName: String?
 ) : Screen {
-  
+
   @OptIn(ExperimentalMaterial3Api::class)
   @Composable
   override fun Content() {
@@ -71,11 +70,11 @@ data class LuaScriptEditorScreen(
     val backStack = LocalBackStack.current
     val preferences = koinInject<AdvancedPreferences>()
     val scope = rememberCoroutineScope()
-    
+
     val mpvConfStorageLocation by preferences.mpvConfStorageUri.collectAsState()
-    
+
     val isNewScript = scriptName == null
-    
+
     var scriptContent by remember { mutableStateOf("") }
     var fileName by remember { mutableStateOf(scriptName?.substringBeforeLast('.') ?: "") }
     var scriptExtension by remember {
@@ -89,44 +88,65 @@ data class LuaScriptEditorScreen(
     }
     var hasUnsavedChanges by remember { mutableStateOf(isNewScript) }
     var showDeleteDialog by remember { mutableStateOf(false) }
-    
+
+    // Helper: resolve the scripts subdirectory as a File, or null
+    fun resolveScriptsDirAsFile(storageLocation: String): File? {
+      val rootDir = File(storageLocation)
+      if (!rootDir.exists() || !rootDir.isDirectory || !rootDir.canRead()) return null
+      return rootDir.listFiles()?.firstOrNull {
+        it.isDirectory && it.name.equals("scripts", ignoreCase = true)
+      } ?: rootDir
+    }
+
     // Load script content if editing existing script
     LaunchedEffect(scriptName, mpvConfStorageLocation) {
-      if (scriptName != null && mpvConfStorageLocation.isNotBlank()) {
-        withContext(Dispatchers.IO) {
+      if (scriptName == null || mpvConfStorageLocation.isBlank()) return@LaunchedEffect
+      withContext(Dispatchers.IO) {
+        var content: String? = null
+
+        // Intento 1: path de archivo directo
+        val scriptsDir = resolveScriptsDirAsFile(mpvConfStorageLocation)
+        if (scriptsDir != null) {
+          val file = File(scriptsDir, scriptName)
+          if (file.exists() && file.canRead()) content = file.readText()
+        }
+
+        // Intento 2: fallback SAF
+        if (content == null) {
           val tempFile = kotlin.io.path.createTempFile()
           runCatching {
             val tree = DocumentFile.fromTreeUri(context, mpvConfStorageLocation.toUri())
             if (tree != null && tree.exists()) {
-              // Try to find "scripts" subdirectory first (case-insensitive)
-              val scriptsDir = tree.listFiles().firstOrNull { 
-                  it.isDirectory && it.name?.equals("scripts", ignoreCase = true) == true 
+              val safScriptsDir = tree.listFiles().firstOrNull {
+                it.isDirectory && it.name?.equals("scripts", ignoreCase = true) == true
               } ?: tree
-
-              val scriptFile = scriptsDir.findFile(scriptName)
+              val scriptFile = safScriptsDir.findFile(scriptName)
               if (scriptFile != null && scriptFile.exists()) {
                 context.contentResolver.openInputStream(scriptFile.uri)?.copyTo(tempFile.outputStream())
-                val content = tempFile.readLines().joinToString("\n")
-                withContext(Dispatchers.Main) {
-                  scriptContent = content
-                  hasUnsavedChanges = false
-                }
+                content = tempFile.readLines().joinToString("\n")
               }
             }
           }
           tempFile.deleteIfExists()
         }
+
+        content?.let { loaded ->
+          withContext(Dispatchers.Main) {
+            scriptContent = loaded
+            hasUnsavedChanges = false
+          }
+        }
       }
     }
-    
+
     fun saveScript() {
       if (fileName.isBlank()) {
         Toast.makeText(context, "Please enter a file name", Toast.LENGTH_SHORT).show()
         return
       }
-      
+
       val finalFileName = "$fileName.$scriptExtension"
-      
+
       scope.launch(Dispatchers.IO) {
         try {
           if (mpvConfStorageLocation.isBlank()) {
@@ -135,45 +155,61 @@ data class LuaScriptEditorScreen(
             }
             return@launch
           }
-          
-          val tree = DocumentFile.fromTreeUri(context, mpvConfStorageLocation.toUri())
-          if (tree == null) {
-            withContext(Dispatchers.Main) {
-              Toast.makeText(context, "No storage location set", Toast.LENGTH_LONG).show()
-            }
-            return@launch
-          }
-          
-          // Try to find "scripts" subdirectory first (case-insensitive)
-          val scriptsDir = tree.listFiles().firstOrNull { 
-              it.isDirectory && it.name?.equals("scripts", ignoreCase = true) == true 
-          } ?: tree
 
-          // If renaming, delete old file
-          val existingScriptName = scriptName.orEmpty()
-          if (!isNewScript && existingScriptName != finalFileName) {
-            scriptsDir.findFile(existingScriptName)?.delete()
+          var saved = false
+
+          // Intento 1: path de archivo directo
+          val scriptsDir = resolveScriptsDirAsFile(mpvConfStorageLocation)
+          if (scriptsDir != null) {
+            // Si renombra, elimina el archivo viejo
+            if (!isNewScript && scriptName != null && scriptName != finalFileName) {
+              File(scriptsDir, scriptName).takeIf { it.exists() }?.delete()
+            }
+            val outFile = File(scriptsDir, finalFileName)
+            outFile.writeText(scriptContent)
+            saved = true
           }
 
-          val existing = scriptsDir.findFile(finalFileName)
-          val scriptFile = existing ?: scriptsDir.createFile("text/plain", finalFileName)?.also { it.renameTo(finalFileName) }
-          val uri = scriptFile?.uri ?: run {
-            withContext(Dispatchers.Main) {
-              Toast.makeText(context, "Failed to create file", Toast.LENGTH_LONG).show()
+          // Intento 2: fallback SAF
+          if (!saved) {
+            val tree = DocumentFile.fromTreeUri(context, mpvConfStorageLocation.toUri())
+            if (tree == null) {
+              withContext(Dispatchers.Main) {
+                Toast.makeText(context, "No storage location set", Toast.LENGTH_LONG).show()
+              }
+              return@launch
             }
-            return@launch
+
+            val safScriptsDir = tree.listFiles().firstOrNull {
+              it.isDirectory && it.name?.equals("scripts", ignoreCase = true) == true
+            } ?: tree
+
+            // Si renombra, elimina el archivo viejo
+            if (!isNewScript && scriptName != null && scriptName != finalFileName) {
+              safScriptsDir.findFile(scriptName)?.delete()
+            }
+
+            val existing = safScriptsDir.findFile(finalFileName)
+            val scriptFile = existing ?: safScriptsDir.createFile("text/plain", finalFileName)
+              ?.also { it.renameTo(finalFileName) }
+            val uri = scriptFile?.uri ?: run {
+              withContext(Dispatchers.Main) {
+                Toast.makeText(context, "Failed to create file", Toast.LENGTH_LONG).show()
+              }
+              return@launch
+            }
+
+            context.contentResolver.openOutputStream(uri, "wt")?.use { out ->
+              out.write(scriptContent.toByteArray())
+              out.flush()
+            } ?: run {
+              withContext(Dispatchers.Main) {
+                Toast.makeText(context, "Failed to open output stream", Toast.LENGTH_LONG).show()
+              }
+              return@launch
+            }
           }
 
-          context.contentResolver.openOutputStream(uri, "wt")?.use { out ->
-            out.write(scriptContent.toByteArray())
-            out.flush()
-          } ?: run {
-            withContext(Dispatchers.Main) {
-              Toast.makeText(context, "Failed to open output stream", Toast.LENGTH_LONG).show()
-            }
-            return@launch
-          }
-          
           withContext(Dispatchers.Main) {
             hasUnsavedChanges = false
             Toast.makeText(context, "$finalFileName saved successfully", Toast.LENGTH_SHORT).show()
@@ -186,111 +222,129 @@ data class LuaScriptEditorScreen(
         }
       }
     }
-    
+
     fun shareScript() {
       if (isNewScript) {
         Toast.makeText(context, "Save the script first before sharing", Toast.LENGTH_SHORT).show()
         return
       }
-      
+
       scope.launch(Dispatchers.IO) {
         try {
-          val tree = DocumentFile.fromTreeUri(context, mpvConfStorageLocation.toUri())
-          if (tree != null && tree.exists()) {
-            // Try to find "scripts" subdirectory first (case-insensitive)
-            val scriptsDir = tree.listFiles().firstOrNull { 
-                it.isDirectory && it.name?.equals("scripts", ignoreCase = true) == true 
-            } ?: tree
+          val cacheFile = File(context.cacheDir, scriptName!!)
+          var ready = false
 
-            val scriptFile = scriptsDir.findFile(scriptName)
-            if (scriptFile != null && scriptFile.exists()) {
-              // Copy to cache directory for sharing
-              val cacheFile = File(context.cacheDir, scriptName)
-              context.contentResolver.openInputStream(scriptFile.uri)?.use { input ->
-                cacheFile.outputStream().use { output ->
-                  input.copyTo(output)
+          // Intento 1: path de archivo directo
+          val scriptsDir = resolveScriptsDirAsFile(mpvConfStorageLocation)
+          if (scriptsDir != null) {
+            val file = File(scriptsDir, scriptName)
+            if (file.exists() && file.canRead()) {
+              file.copyTo(cacheFile, overwrite = true)
+              ready = true
+            }
+          }
+
+          // Intento 2: fallback SAF
+          if (!ready) {
+            val tree = DocumentFile.fromTreeUri(context, mpvConfStorageLocation.toUri())
+            if (tree != null && tree.exists()) {
+              val safScriptsDir = tree.listFiles().firstOrNull {
+                it.isDirectory && it.name?.equals("scripts", ignoreCase = true) == true
+              } ?: tree
+              val scriptFile = safScriptsDir.findFile(scriptName)
+              if (scriptFile != null && scriptFile.exists()) {
+                context.contentResolver.openInputStream(scriptFile.uri)?.use { input ->
+                  cacheFile.outputStream().use { output -> input.copyTo(output) }
                 }
-              }
-              
-              // Get content URI using FileProvider
-              val contentUri = FileProvider.getUriForFile(
-                context,
-                "${context.packageName}.provider",
-                cacheFile
-              )
-              
-              withContext(Dispatchers.Main) {
-                val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                  type = "text/plain"
-                  putExtra(Intent.EXTRA_STREAM, contentUri)
-                  putExtra(Intent.EXTRA_SUBJECT, scriptName)
-                  addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                }
-                context.startActivity(Intent.createChooser(shareIntent, "Share $scriptName"))
+                ready = true
               }
             }
           }
+
+          if (!ready) {
+            withContext(Dispatchers.Main) {
+              Toast.makeText(context, "Script file not found", Toast.LENGTH_SHORT).show()
+            }
+            return@launch
+          }
+
+          val contentUri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.provider",
+            cacheFile,
+          )
+
+          withContext(Dispatchers.Main) {
+            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+              type = "text/plain"
+              putExtra(Intent.EXTRA_STREAM, contentUri)
+              putExtra(Intent.EXTRA_SUBJECT, scriptName)
+              addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(shareIntent, "Share $scriptName"))
+          }
         } catch (e: Exception) {
           withContext(Dispatchers.Main) {
-            Toast.makeText(
-              context,
-              "Failed to share: ${e.message}",
-              Toast.LENGTH_LONG
-            ).show()
+            Toast.makeText(context, "Failed to share: ${e.message}", Toast.LENGTH_LONG).show()
           }
         }
       }
     }
-    
+
     fun deleteScript() {
       if (isNewScript) {
         backStack.popSafely()
         return
       }
-      
+
       scope.launch(Dispatchers.IO) {
         try {
-          val tree = DocumentFile.fromTreeUri(context, mpvConfStorageLocation.toUri())
-          if (tree != null && tree.exists()) {
-              // Try to find "scripts" subdirectory first (case-insensitive)
-              val scriptsDir = tree.listFiles().firstOrNull { 
-                  it.isDirectory && it.name?.equals("scripts", ignoreCase = true) == true 
-              } ?: tree
+          var deleted = false
 
-              val scriptFile = scriptsDir.findFile(scriptName)
+          // Intento 1: path de archivo directo
+          val scriptsDir = resolveScriptsDirAsFile(mpvConfStorageLocation)
+          if (scriptsDir != null) {
+            val file = File(scriptsDir, scriptName!!)
+            if (file.exists()) {
+              deleted = file.delete()
+            }
+          }
+
+          // Intento 2: fallback SAF
+          if (!deleted) {
+            val tree = DocumentFile.fromTreeUri(context, mpvConfStorageLocation.toUri())
+            if (tree != null && tree.exists()) {
+              val safScriptsDir = tree.listFiles().firstOrNull {
+                it.isDirectory && it.name?.equals("scripts", ignoreCase = true) == true
+              } ?: tree
+              val scriptFile = safScriptsDir.findFile(scriptName!!)
               if (scriptFile != null && scriptFile.exists()) {
-                val deleted = scriptFile.delete()
-                
-                if (deleted) {
-                  // Remove from selected scripts if it was selected
-                  val selectedScripts = preferences.selectedLuaScripts.get()
-                  if (selectedScripts.contains(scriptName)) {
-                    preferences.selectedLuaScripts.set(selectedScripts - scriptName)
-                  }
-                  
-                  withContext(Dispatchers.Main) {
-                    Toast.makeText(context, "$scriptName deleted", Toast.LENGTH_SHORT).show()
-                    backStack.popSafely()
-                  }
-                }
+                deleted = scriptFile.delete()
               }
+            }
+          }
+
+          if (deleted) {
+            val selectedScripts = preferences.selectedLuaScripts.get()
+            if (selectedScripts.contains(scriptName)) {
+              preferences.selectedLuaScripts.set(selectedScripts - scriptName!!)
+            }
+            withContext(Dispatchers.Main) {
+              Toast.makeText(context, "$scriptName deleted", Toast.LENGTH_SHORT).show()
+              backStack.popSafely()
+            }
           }
         } catch (e: Exception) {
           withContext(Dispatchers.Main) {
-            Toast.makeText(
-              context,
-              "Failed to delete: ${e.message}",
-              Toast.LENGTH_LONG
-            ).show()
+            Toast.makeText(context, "Failed to delete: ${e.message}", Toast.LENGTH_LONG).show()
           }
         }
       }
     }
-    
+
     Column(
       modifier = Modifier.fillMaxSize()
     ) {
-      // Fixed TopAppBar
       TopAppBar(
         title = {
           Column {
@@ -364,7 +418,6 @@ data class LuaScriptEditorScreen(
           }
         },
         actions = {
-          // Help button
           IconButton(
             onClick = { backStack.add(MpvHelpScreen()) },
             modifier = Modifier.padding(end = 4.dp).size(40.dp),
@@ -378,53 +431,38 @@ data class LuaScriptEditorScreen(
             )
           }
 
-          // Share button (only for existing scripts)
           if (!isNewScript) {
             IconButton(
               onClick = { shareScript() },
-              modifier = Modifier
-                .padding(horizontal = 4.dp)
-                .size(40.dp),
+              modifier = Modifier.padding(horizontal = 4.dp).size(40.dp),
               colors = IconButtonDefaults.iconButtonColors(
                 containerColor = MaterialTheme.colorScheme.surfaceVariant,
                 contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
               ),
               shape = RoundedCornerShape(8.dp),
             ) {
-              Icon(
-                Icons.Default.Share,
-                contentDescription = "Share",
-              )
+              Icon(Icons.Default.Share, contentDescription = "Share")
             }
           }
-          
-          // Delete button (only for existing scripts)
+
           if (!isNewScript) {
             IconButton(
               onClick = { showDeleteDialog = true },
-              modifier = Modifier
-                .padding(horizontal = 4.dp)
-                .size(40.dp),
+              modifier = Modifier.padding(horizontal = 4.dp).size(40.dp),
               colors = IconButtonDefaults.iconButtonColors(
                 containerColor = MaterialTheme.colorScheme.errorContainer,
                 contentColor = MaterialTheme.colorScheme.onErrorContainer,
               ),
               shape = RoundedCornerShape(8.dp),
             ) {
-              Icon(
-                Icons.Default.Delete,
-                contentDescription = "Delete",
-              )
+              Icon(Icons.Default.Delete, contentDescription = "Delete")
             }
           }
-          
-          // Save button
+
           IconButton(
             onClick = { saveScript() },
             enabled = hasUnsavedChanges && fileName.isNotBlank(),
-            modifier = Modifier
-              .padding(horizontal = 4.dp)
-              .size(40.dp),
+            modifier = Modifier.padding(horizontal = 4.dp).size(40.dp),
             colors = IconButtonDefaults.iconButtonColors(
               containerColor = if (hasUnsavedChanges && fileName.isNotBlank()) {
                 MaterialTheme.colorScheme.primaryContainer
@@ -448,8 +486,7 @@ data class LuaScriptEditorScreen(
           }
         },
       )
-      
-      // Editor content with IME padding
+
       Box(
         modifier = Modifier
           .fillMaxSize()
@@ -467,8 +504,7 @@ data class LuaScriptEditorScreen(
         )
       }
     }
-    
-    // Delete confirmation dialog
+
     if (showDeleteDialog) {
       ConfirmDialog(
         title = "Delete Script?",
@@ -494,18 +530,10 @@ private fun ScriptExtensionChip(
   Surface(
     modifier = Modifier.clickable(onClick = onClick),
     shape = RoundedCornerShape(999.dp),
-    color =
-      if (selected) {
-        MaterialTheme.colorScheme.primaryContainer
-      } else {
-        MaterialTheme.colorScheme.surfaceVariant
-      },
-    contentColor =
-      if (selected) {
-        MaterialTheme.colorScheme.onPrimaryContainer
-      } else {
-        MaterialTheme.colorScheme.onSurfaceVariant
-      },
+    color = if (selected) MaterialTheme.colorScheme.primaryContainer
+            else MaterialTheme.colorScheme.surfaceVariant,
+    contentColor = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
+                   else MaterialTheme.colorScheme.onSurfaceVariant,
   ) {
     Text(
       text = label,
@@ -515,4 +543,3 @@ private fun ScriptExtensionChip(
     )
   }
 }
-
