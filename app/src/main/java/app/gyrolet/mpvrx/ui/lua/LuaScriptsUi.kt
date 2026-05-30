@@ -34,10 +34,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.core.net.toUri
-import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.File
 
 data class LuaScriptsCatalogState(
   val availableScripts: List<String> = emptyList(),
@@ -46,61 +45,58 @@ data class LuaScriptsCatalogState(
 
 @Composable
 fun rememberLuaScriptsCatalog(
-  storageUri: String,
-  selectedScripts: Set<String>,
-  onSelectionPruned: (Set<String>) -> Unit,
+    storageUri: String,
+    selectedScripts: Set<String>,
+    onSelectionPruned: (Set<String>) -> Unit,
 ): LuaScriptsCatalogState {
-  val context = LocalContext.current
-  var state by remember(storageUri) { mutableStateOf(LuaScriptsCatalogState()) }
+    val context = LocalContext.current
+    var state by remember(storageUri) { mutableStateOf(LuaScriptsCatalogState()) }
 
-  LaunchedEffect(storageUri) {
-    if (storageUri.isBlank()) {
-      state = LuaScriptsCatalogState(availableScripts = emptyList(), isLoading = false)
-      return@LaunchedEffect
+    LaunchedEffect(storageUri) {
+        if (storageUri.isBlank()) {
+            state = LuaScriptsCatalogState(availableScripts = emptyList(), isLoading = false)
+            return@LaunchedEffect
+        }
+
+        state = state.copy(isLoading = true)
+
+        val result = withContext(Dispatchers.IO) {
+            runCatching {
+                val scripts = mutableListOf<String>()
+                val rootDir = File(storageUri)
+
+                if (rootDir.exists() && rootDir.isDirectory && rootDir.canRead()) {
+                    val scriptsDir = rootDir.listFiles()?.firstOrNull {
+                        it.isDirectory && it.name.equals("scripts", ignoreCase = true)
+                    } ?: rootDir
+
+                    val scriptExtensions = setOf("lua", "js")
+                    scriptsDir.listFiles()?.forEach { file ->
+                        if (!file.isFile) return@forEach
+                        if (file.extension.lowercase() in scriptExtensions) {
+                            scripts += file.name
+                        }
+                    }
+                }
+                scripts.sorted()
+            }
+        }
+
+        result
+            .onSuccess { scripts ->
+                state = LuaScriptsCatalogState(availableScripts = scripts, isLoading = false)
+                val validSelection = selectedScripts.filterTo(linkedSetOf()) { it in scripts }
+                if (validSelection.size != selectedScripts.size) {
+                    onSelectionPruned(validSelection)
+                }
+            }
+            .onFailure { error ->
+                state = LuaScriptsCatalogState(availableScripts = emptyList(), isLoading = false)
+                Toast.makeText(context, "Error loading scripts: ${error.message}", Toast.LENGTH_LONG).show()
+            }
     }
 
-    state = state.copy(isLoading = true)
-
-    val result =
-      withContext(Dispatchers.IO) {
-        runCatching {
-          val scripts = mutableListOf<String>()
-          val tree = DocumentFile.fromTreeUri(context, storageUri.toUri())
-          if (tree != null && tree.exists()) {
-            val scriptsDir =
-              tree.listFiles().firstOrNull {
-                it.isDirectory && it.name?.equals("scripts", ignoreCase = true) == true
-              } ?: tree
-            val scriptExtensions = setOf("lua", "js")
-
-            scriptsDir.listFiles().forEach { file ->
-              if (!file.isFile) return@forEach
-              val name = file.name ?: return@forEach
-              val extension = name.substringAfterLast('.', "").lowercase()
-              if (extension in scriptExtensions) {
-                scripts += name
-              }
-            }
-          }
-          scripts.sorted()
-        }
-      }
-
-    result
-      .onSuccess { scripts ->
-        state = LuaScriptsCatalogState(availableScripts = scripts, isLoading = false)
-
-        val validSelection = selectedScripts.filterTo(linkedSetOf()) { it in scripts }
-        if (validSelection.size != selectedScripts.size) {
-          onSelectionPruned(validSelection)
-        }
-      }.onFailure { error ->
-        state = LuaScriptsCatalogState(availableScripts = emptyList(), isLoading = false)
-        Toast.makeText(context, "Error loading scripts: ${error.message}", Toast.LENGTH_LONG).show()
-      }
-  }
-
-  return state
+    return state
 }
 
 @Composable
@@ -396,4 +392,3 @@ fun LuaSelectionFootnote(
       .padding(horizontal = 4.dp),
   )
 }
-
