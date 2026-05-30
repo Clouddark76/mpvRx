@@ -47,10 +47,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import org.koin.compose.koinInject
 import java.io.File
-import kotlin.io.path.createTempFile
-import kotlin.io.path.deleteIfExists
-import kotlin.io.path.outputStream
-import kotlin.io.path.readLines
+import android.util.Log
 
 @Serializable
 data class ConfigEditorScreen(
@@ -89,64 +86,70 @@ data class ConfigEditorScreen(
 
     // Load from external storage if a folder is configured
     LaunchedEffect(mpvConfStorageLocation) {
-      if (mpvConfStorageLocation.isBlank()) return@LaunchedEffect
-      withContext(Dispatchers.IO) {
-        val tempFile = createTempFile()
-        runCatching {
-          val tree       = DocumentFile.fromTreeUri(context, mpvConfStorageLocation.toUri())
-          val configFile = tree?.findFile(fileName)
-          if (configFile != null && configFile.exists()) {
-            context.contentResolver.openInputStream(configFile.uri)?.copyTo(tempFile.outputStream())
-            val content = tempFile.readLines().joinToString("\n")
-            withContext(Dispatchers.Main) { configText = content }
-          }
+        if (mpvConfStorageLocation.isBlank()) return@LaunchedEffect
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val rootDir = File(mpvConfStorageLocation)
+                if (rootDir.exists() && rootDir.isDirectory && rootDir.canRead()) {
+                    val file = rootDir.listFiles()?.firstOrNull {
+                        it.isFile && it.name.equals(fileName, ignoreCase = true)
+                    }
+                    if (file != null && file.canRead()) {
+                        val content = file.readText()
+                        withContext(Dispatchers.Main) { configText = content }
+                        return@runCatching
+                    }
+                }
+                // Fallback SAF para configuraciones antiguas
+                val tree = DocumentFile.fromTreeUri(context, mpvConfStorageLocation.toUri()) ?: return@runCatching
+                val doc = tree.findFile(fileName) ?: return@runCatching
+                val content = context.contentResolver.openInputStream(doc.uri)
+                    ?.bufferedReader()?.readText() ?: return@runCatching
+                withContext(Dispatchers.Main) { configText = content }
+            }.onFailure { e ->
+                Log.e("ConfigEditor", "Error loading $fileName", e)
+            }
         }
-        tempFile.deleteIfExists()
-      }
     }
 
     fun saveConfig() {
-      scope.launch(Dispatchers.IO) {
-        try {
-          when (configType) {
-            ConfigType.MPV_CONF   -> preferences.mpvConf.set(configText)
-            ConfigType.INPUT_CONF -> preferences.inputConf.set(configText)
-          }
-          File(context.filesDir, fileName).writeText(configText)
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                when (configType) {
+                    ConfigType.MPV_CONF   -> preferences.mpvConf.set(configText)
+                    ConfigType.INPUT_CONF -> preferences.inputConf.set(configText)
+                }
+                // Siempre escribir en filesDir — lo que MPV lee en runtime
+                File(context.filesDir, fileName).writeText(configText)
 
-          if (mpvConfStorageLocation.isNotBlank()) {
-            val tree = DocumentFile.fromTreeUri(context, mpvConfStorageLocation.toUri())
-            if (tree == null) {
-              withContext(Dispatchers.Main) {
-                Toast.makeText(context, "No storage location set", Toast.LENGTH_LONG).show()
-              }
-              return@launch
+                if (mpvConfStorageLocation.isNotBlank()) {
+                    // Intento 1: path de archivo directo
+                    val rootDir = File(mpvConfStorageLocation)
+                    if (rootDir.exists() && rootDir.isDirectory && rootDir.canWrite()) {
+                        File(rootDir, fileName).writeText(configText)
+                    } else {
+                        // Intento 2: fallback SAF
+                        val tree = DocumentFile.fromTreeUri(context, mpvConfStorageLocation.toUri())
+                            ?: throw IllegalStateException("Storage location not accessible")
+                        val doc = tree.findFile(fileName) ?: tree.createFile("text/plain", fileName)
+                            ?: throw IllegalStateException("Failed to create $fileName")
+                        context.contentResolver.openOutputStream(doc.uri, "wt")?.use {
+                            it.write(configText.toByteArray())
+                        }
+                    }
+                }
+            }.onSuccess {
+                withContext(Dispatchers.Main) {
+                    hasUnsavedChanges = false
+                    Toast.makeText(context, "$fileName saved", Toast.LENGTH_SHORT).show()
+                    backStack.popSafely()
+                }
+            }.onFailure { e ->
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(context, "Failed to save: ${e.message}", Toast.LENGTH_LONG).show()
+                }
             }
-            val existing = tree.findFile(fileName)
-            val confFile = existing ?: tree.createFile("text/plain", fileName)?.also { it.renameTo(fileName) }
-            val uri = confFile?.uri ?: run {
-              withContext(Dispatchers.Main) {
-                Toast.makeText(context, "Failed to create file", Toast.LENGTH_LONG).show()
-              }
-              return@launch
-            }
-            context.contentResolver.openOutputStream(uri, "wt")?.use { out ->
-              out.write(configText.toByteArray())
-              out.flush()
-            }
-          }
-
-          withContext(Dispatchers.Main) {
-            hasUnsavedChanges = false
-            Toast.makeText(context, "$fileName saved", Toast.LENGTH_SHORT).show()
-            backStack.popSafely()
-          }
-        } catch (e: Exception) {
-          withContext(Dispatchers.Main) {
-            Toast.makeText(context, "Failed to save: ${e.message}", Toast.LENGTH_LONG).show()
-          }
         }
-      }
     }
 
     Column(
@@ -237,4 +240,3 @@ data class ConfigEditorScreen(
     }
   }
 }
-
