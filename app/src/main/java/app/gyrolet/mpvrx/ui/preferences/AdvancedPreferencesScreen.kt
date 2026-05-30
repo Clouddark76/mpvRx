@@ -890,7 +890,8 @@ object AdvancedPreferencesScreen : Screen {
 
 fun getSimplifiedPathFromUri(uri: String): String =
   File(Environment.getExternalStorageDirectory(), Uri.decode(uri).substringAfterLast(":")).canonicalPath
-
+fun getSimplifiedStoragePath(uri: String): String =
+  File(Environment.getExternalStorageDirectory(), Uri.decode(uri).substringAfterLast(":")).canonicalPath
 private fun formatFileSize(bytes: Long): String {
   return when {
     bytes < 1024 -> "$bytes B"
