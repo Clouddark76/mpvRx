@@ -189,7 +189,7 @@ class ScriptCurlBridge(
                 val rawBody = response.body?.byteStream()?.let { stream ->
                     val buffer = ByteArray(MAX_RESPONSE_BODY_BYTES + 1)
                     var totalRead = 0
-                    var bytesRead = 0
+                    var bytesRead: Int
                     while (totalRead <= MAX_RESPONSE_BODY_BYTES &&
                         stream.read(buffer, totalRead, buffer.size - totalRead).also { bytesRead = it } != -1
                     ) {
@@ -200,7 +200,7 @@ class ScriptCurlBridge(
                     if (truncated) {
                         Log.w(TAG, "Response body truncated (> $MAX_RESPONSE_BODY_BYTES bytes)")
                     }
-                    String(buffer, 0, limit, Charsets.UTF_8) +
+                    buffer.toString(Charsets.UTF_8, 0, limit) +
                         if (truncated) "\n[truncated]" else ""
                 } ?: ""
 
