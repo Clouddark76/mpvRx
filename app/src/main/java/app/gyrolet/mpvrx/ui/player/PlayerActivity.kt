@@ -29,6 +29,7 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.Toast
+import androidx.activity.BackEventCompat
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -78,6 +79,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -259,6 +261,13 @@ class PlayerActivity :
   private var playlistItems: List<PlaylistItemEntity> = emptyList()
 
   /**
+   * Original network metadata for intent-backed WebDAV/SMB/FTP playlists.
+   */
+  private var networkPlaylistPaths: List<String> = emptyList()
+  private var networkPlaylistTitles: List<String> = emptyList()
+  private var networkPlaylistConnectionId: Long = -1L
+
+  /**
    * Playlist metadata for the current Room-backed playlist.
    */
   private var playlistEntity: PlaylistEntity? = null
@@ -314,6 +323,8 @@ class PlayerActivity :
   private var handledPipDismissal = false
   private var pendingManualBackgroundFinish = false
   private var noisyReceiverRegistered = false
+  private var lastVid = -1 // Track video track for background playback optimization
+  private var isInBackgroundPlayback = false // Track if we are currently in background playback mode
   private var screenStateReceiverRegistered = false
   private var mpvInitialized = false // Track MPV initialization state
   private var savePlaybackStateJob: Job? = null // Track ongoing save job
@@ -486,7 +497,10 @@ class PlayerActivity :
     setContentView(binding.root)
     setupSystemBarsAutoHide()
 
-    releaseDetachedBackgroundPlaybackBeforeFreshLaunch()
+    val isNotificationReentry = isNotificationReentryIntent(intent)
+    if (!isNotificationReentry) {
+      releaseDetachedBackgroundPlaybackBeforeFreshLaunch()
+    }
     setupMPV()
     viewModel.onMpvCoreInitialized()
     MediaPlaybackService.createNotificationChannel(this)
@@ -499,6 +513,7 @@ class PlayerActivity :
 
     playlistId = intent.getIntExtra("playlist_id", -1).takeIf { it != -1 }
     playlistIndex = intent.getIntExtra("playlist_index", 0)
+    loadNetworkPlaylistMetadata(intent)
 
     // Load playlist from intent extras first (fast path - backward compatibility)
     playlist = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
@@ -568,9 +583,15 @@ class PlayerActivity :
       }
 
       currentPlayableUri = playableUri
-      isReady = false
-      viewModel.onVideoLoadStarted()
-      player.playFile(playableUri)
+      if (isNotificationReentry) {
+        isReady = true
+        viewModel.onVideoLoadCompleted()
+        endBackgroundPlayback()
+      } else {
+        isReady = false
+        viewModel.onVideoLoadStarted()
+        player.playFile(playableUri)
+      }
     }
 
     // Only set orientation immediately if NOT in Video mode
@@ -647,14 +668,81 @@ class PlayerActivity :
   }
 
   private fun setupBackPressHandler() {
-    onBackPressedDispatcher.addCallback(
-      this,
-      object : OnBackPressedCallback(true) {
+    val callback =
+      object : OnBackPressedCallback(shouldInterceptBackPress()) {
+        override fun handleOnBackStarted(backEvent: BackEventCompat) {
+          applyPredictiveBackProgress(backEvent)
+        }
+
+        override fun handleOnBackProgressed(backEvent: BackEventCompat) {
+          applyPredictiveBackProgress(backEvent)
+        }
+
+        override fun handleOnBackCancelled() {
+          resetPredictiveBackProgress()
+        }
+
         override fun handleOnBackPressed() {
           handleBackPress()
+          resetPredictiveBackProgress()
         }
-      },
+      }
+
+    onBackPressedDispatcher.addCallback(
+      this,
+      callback,
     )
+
+    lifecycleScope.launch {
+      combine(
+        viewModel.sheetShown,
+        viewModel.panelShown,
+        playerPreferences.autoPiPOnNavigation.changes(),
+      ) { sheetShown, panelShown, autoPipOnNavigation ->
+        sheetShown != Sheets.None || panelShown != Panels.None || autoPipOnNavigation
+      }
+        .distinctUntilChanged()
+        .collect { callback.isEnabled = it }
+    }
+  }
+
+  private fun shouldInterceptBackPress(): Boolean =
+    viewModel.sheetShown.value != Sheets.None ||
+      viewModel.panelShown.value != Panels.None ||
+      playerPreferences.autoPiPOnNavigation.get()
+
+  private fun applyPredictiveBackProgress(backEvent: BackEventCompat) {
+    val root = binding.root
+    val width = root.width
+    val height = root.height
+    if (width == 0 || height == 0) return
+
+    val progress = backEvent.progress.coerceIn(0f, 1f)
+    val fromRightEdge = backEvent.swipeEdge == BackEventCompat.EDGE_RIGHT
+    val direction = if (fromRightEdge) -1f else 1f
+    val scale = 1f - (0.045f * progress)
+
+    root.animate().cancel()
+    binding.controls.animate().cancel()
+    root.pivotX = if (fromRightEdge) width.toFloat() else 0f
+    root.pivotY = backEvent.touchY.coerceIn(0f, height.toFloat())
+    root.scaleX = scale
+    root.scaleY = scale
+    root.translationX = direction * width * 0.04f * progress
+    binding.controls.alpha = 1f - (0.2f * progress)
+  }
+
+  private fun resetPredictiveBackProgress() {
+    binding.root.animate()
+      .scaleX(1f)
+      .scaleY(1f)
+      .translationX(0f)
+      .setDuration(140L)
+      .start()
+    binding.controls.animate()
+      .alpha(1f)
+      .setDuration(140L)
+      .start()
   }
 
   private fun handleBackPress() {
@@ -932,6 +1020,9 @@ class PlayerActivity :
       if (!isInPip && shouldPause) {
         wasPlayingBeforePause = !(viewModel.paused ?: true)
         viewModel.pause()
+      } else if (!isInPip && !shouldPause) {
+        // Background playback is active - disable video decoding to save battery
+        disableVideoForBackground()
       }
 
       // Restore UI immediately when user is finishing for instant feedback
@@ -1016,7 +1107,9 @@ class PlayerActivity :
           isInPictureInPictureMode = isInPictureInPictureMode,
         )
       ) {
-        if (startBackgroundPlayback(allowUserPrompt = false) == BackgroundPlaybackStartResult.Blocked) {
+        if (startBackgroundPlayback(allowUserPrompt = false) == BackgroundPlaybackStartResult.Started) {
+          disableVideoForBackground()
+        } else {
           viewModel.pause()
         }
         return@runCatching
@@ -1026,6 +1119,9 @@ class PlayerActivity :
 
       if (!shouldAllowBackgroundPlayback && (isUserFinishing || isFinishing)) {
         viewModel.pause()
+      } else if (!isInBackgroundPlayback) {
+        // Ensure video is disabled when hidden, even if it wasn't handled in onPause (e.g. multi-window)
+        disableVideoForBackground()
       }
     }.onFailure { e ->
       Log.e(TAG, "Error during onStop", e)
@@ -1055,6 +1151,12 @@ class PlayerActivity :
     runCatching {
       setupWindowFlags()
       setupSystemUI()
+
+      // Restore video if it was disabled for background playback
+      enableVideoAfterBackground()
+      if (!isInPictureInPictureMode && MediaPlaybackService.isRunning()) {
+        endBackgroundPlayback()
+      }
 
       if (!noisyReceiverRegistered) {
         val filter = IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
@@ -1242,6 +1344,9 @@ class PlayerActivity :
       Log.e(TAG, "Error destroying detached MPV session", e)
     }
   }
+
+  private fun isNotificationReentryIntent(intent: Intent?): Boolean =
+    intent?.action == MediaPlaybackService.ACTION_OPEN_PLAYER && MediaPlaybackService.isRunning()
 
   /**
    * Initializes the MPV player with the necessary paths and observers.
@@ -1665,6 +1770,7 @@ class PlayerActivity :
 
   override fun onResume() {
     super.onResume()
+    enableVideoAfterBackground()
     updateVolume()
     resumePlaybackAfterScreenUnlockIfNeeded()
   }
@@ -3030,6 +3136,8 @@ class PlayerActivity :
       MediaPlaybackService.ACTION_OPEN_PLAYER -> {
         isManualBackgroundPlayback = false
         pendingManualBackgroundFinish = false
+        isReady = true
+        viewModel.onVideoLoadCompleted()
         endBackgroundPlayback()
         return
       }
@@ -3066,6 +3174,7 @@ class PlayerActivity :
       playlistItems = emptyList()
       playlistEntity = null
       isM3uPlaylist = false
+      loadNetworkPlaylistMetadata(intent)
     }
 
     // If playlist is empty but playlist_id is provided, load from database
@@ -3694,10 +3803,11 @@ class PlayerActivity :
     // Restore system UI before going to background
     restoreSystemUI()
 
-    // Close the player and return to the browser screen the user came from while
-    // keeping playback alive in the background service.
-    isUserFinishing = true
-    finish()
+    // Keep this activity and MPV instance alive in the task. Finishing here detaches
+    // the observer that owns repeat/playlist EOF handling and forces streams to
+    // reload when the user opens the player again from the notification.
+    disableVideoForBackground()
+    moveTaskToBack(true)
   }
 
   // ==================== PlayerHost ====================
@@ -3926,15 +4036,23 @@ class PlayerActivity :
     val uri = playlist[index]
     val playableUri = uri.openContentFd(this) ?: uri.toString()
     currentPlayableUri = uri.toString()
+    val networkFilePath = networkPlaylistPaths.getOrNull(index)?.takeIf { it.isNotBlank() }
+    val networkTitle = networkPlaylistTitles.getOrNull(index)?.takeIf { it.isNotBlank() }
 
     // Update playlist index
     playlistIndex = index
     viewModel.calculateVideoHash(uri)
 
     // Extract and set the new file name
-    fileName = getPlaylistItemByIndex(index)?.fileName?.takeIf { it.isNotBlank() } ?: getFileNameFromUri(uri)
+    fileName = getPlaylistItemByIndex(index)?.fileName?.takeIf { it.isNotBlank() }
+      ?: networkTitle
+      ?: getFileNameFromUri(uri)
     // Generate new media identifier for playback state
-    mediaIdentifier = getMediaIdentifierFromUri(uri, fileName)
+    mediaIdentifier = if (networkFilePath != null && networkPlaylistConnectionId != -1L) {
+      buildNetworkMediaIdentifier(networkPlaylistConnectionId, networkFilePath)
+    } else {
+      getMediaIdentifierFromUri(uri, fileName)
+    }
 
     // Set HTTP headers (including referer) for network streams
     setHttpHeadersForUri(uri)
@@ -4219,7 +4337,7 @@ class PlayerActivity :
 
     if (networkFilePath != null && networkConnectionId != -1L) {
       // For network files via proxy: use connection ID + file path for stable identifier
-      val identifier = "network_${networkConnectionId}_${networkFilePath.hashCode()}"
+      val identifier = buildNetworkMediaIdentifier(networkConnectionId, networkFilePath)
       Log.d(
         TAG,
         "Using network file identifier: $identifier (connection: $networkConnectionId, path: $networkFilePath)",
@@ -4236,6 +4354,15 @@ class PlayerActivity :
       fileName
     }
   }
+
+  private fun loadNetworkPlaylistMetadata(intent: Intent) {
+    networkPlaylistPaths = intent.getStringArrayListExtra("network_playlist_paths") ?: emptyList()
+    networkPlaylistTitles = intent.getStringArrayListExtra("network_playlist_titles") ?: emptyList()
+    networkPlaylistConnectionId = intent.getLongExtra("network_playlist_connection_id", -1L)
+  }
+
+  private fun buildNetworkMediaIdentifier(connectionId: Long, filePath: String): String =
+    "network_${connectionId}_${filePath.hashCode()}"
 
   /**
    * Generate a unique identifier for this media from a URI and name.
@@ -4379,6 +4506,35 @@ class PlayerActivity :
    */
   fun isCurrentPlaylistM3U(): Boolean = isM3uPlaylist
 
+  /**
+   * Disables video decoding to save battery when moving to background playback.
+   */
+  private fun disableVideoForBackground() {
+    if (!isReady || fileName.isBlank()) return
+
+    val currentVid = MPVLib.getPropertyInt("vid") ?: -1
+    if (currentVid > 0) {
+      lastVid = currentVid
+      MPVLib.setPropertyString("vid", "no")
+      isInBackgroundPlayback = true
+      Log.d(TAG, "Video disabled for background playback (saved vid: $lastVid)")
+    }
+  }
+
+  /**
+   * Restores video decoding when returning from background playback.
+   */
+  private fun enableVideoAfterBackground() {
+    isInBackgroundPlayback = false
+    if (lastVid > 0) {
+      Log.d(TAG, "Restoring video after background playback (vid: $lastVid)")
+      MPVLib.setPropertyInt("vid", lastVid)
+      lastVid = -1
+    } else if ((MPVLib.getPropertyInt("vid") ?: -1) <= 0) {
+      Log.d(TAG, "Restoring video after background playback with auto track selection")
+      MPVLib.setPropertyString("vid", "auto")
+    }
+  }
 
   companion object {
     /**

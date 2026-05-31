@@ -1,5 +1,6 @@
 package app.gyrolet.mpvrx
 
+import android.content.res.Configuration
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
@@ -29,6 +30,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.Modifier
@@ -46,6 +48,7 @@ import app.gyrolet.mpvrx.presentation.Screen
 import app.gyrolet.mpvrx.repository.NetworkRepository
 import app.gyrolet.mpvrx.utils.update.UpdateDialog
 import app.gyrolet.mpvrx.utils.update.UpdateViewModel
+import app.gyrolet.mpvrx.repository.NetworkLifecycleObserver
 import app.gyrolet.mpvrx.ui.browser.MainScreen
 import app.gyrolet.mpvrx.ui.theme.DarkMode
 import app.gyrolet.mpvrx.ui.theme.MpvrxTheme
@@ -116,6 +119,7 @@ class MainActivity : ComponentActivity() {
   private val appearancePreferences by inject<AppearancePreferences>()
   private val playerPreferences by inject<PlayerPreferences>()
   private val networkRepository by inject<NetworkRepository>()
+  private var appliedEdgeToEdgeDarkMode: Boolean? = null
 
   // Create a coroutine scope tied to the activity lifecycle
   private val activityScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -136,18 +140,26 @@ class MainActivity : ComponentActivity() {
     if (networkStreamingEnabled) {
       lifecycle.addObserver(app.gyrolet.mpvrx.ui.browser.networkstreaming.proxy.ProxyLifecycleObserver())
     }
+    lifecycle.addObserver(NetworkLifecycleObserver(networkRepository))
+
+    applyEdgeToEdge(
+      isDarkMode = resolveIsDarkMode(
+        darkMode = appearancePreferences.darkMode.get(),
+        isSystemInDarkTheme = isSystemInDarkThemeFromResources(),
+      ),
+    )
 
     setContent {
       // Set up theme and edge-to-edge display
       val dark by appearancePreferences.darkMode.collectAsState()
       val isSystemInDarkTheme = isSystemInDarkTheme()
-      val isDarkMode = dark == DarkMode.Dark || (dark == DarkMode.System && isSystemInDarkTheme)
-      enableEdgeToEdge(
-        SystemBarStyle.auto(
-          lightScrim = Color.White.toArgb(),
-          darkScrim = Color.Transparent.toArgb(),
-        ) { isDarkMode },
-      )
+      val isDarkMode = remember(dark, isSystemInDarkTheme) {
+        dark == DarkMode.Dark || (dark == DarkMode.System && isSystemInDarkTheme)
+      }
+
+      LaunchedEffect(isDarkMode) {
+        applyEdgeToEdge(isDarkMode)
+      }
 
       // Auto-connect to saved network connections
       LaunchedEffect(networkStreamingEnabled) {
@@ -170,6 +182,27 @@ class MainActivity : ComponentActivity() {
     } catch (e: Exception) {
       Log.e("MainActivity", "Error during onDestroy", e)
     }
+  }
+
+  private fun resolveIsDarkMode(
+    darkMode: DarkMode,
+    isSystemInDarkTheme: Boolean,
+  ): Boolean =
+    darkMode == DarkMode.Dark || (darkMode == DarkMode.System && isSystemInDarkTheme)
+
+  private fun isSystemInDarkThemeFromResources(): Boolean =
+    (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+
+  private fun applyEdgeToEdge(isDarkMode: Boolean) {
+    if (appliedEdgeToEdgeDarkMode == isDarkMode) return
+
+    enableEdgeToEdge(
+      SystemBarStyle.auto(
+        lightScrim = Color.White.toArgb(),
+        darkScrim = Color.Transparent.toArgb(),
+      ) { isDarkMode },
+    )
+    appliedEdgeToEdgeDarkMode = isDarkMode
   }
 
   /**

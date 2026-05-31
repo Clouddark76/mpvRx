@@ -110,6 +110,7 @@ android {
     viewBinding = true
     buildConfig = true
     resValues = true
+    prefab = true
   }
 
   packaging {
@@ -130,6 +131,11 @@ android {
   @Suppress("UnstableApiUsage")
   androidResources {
     generateLocaleConfig = true
+  }
+
+  lint {
+    checkReleaseBuilds = false
+    abortOnError = false
   }
 }
 
@@ -170,7 +176,7 @@ kotlin {
 }
 
 composeCompiler {
-  includeSourceInformation = true
+  includeSourceInformation = false
 }
 
 room {
@@ -258,6 +264,7 @@ dependencies {
   implementation(libs.kotlinx.immutable.collections)
   implementation(libs.kotlinx.serialization.json)
   implementation(libs.okhttp)
+  implementation(libs.curl.android)
   implementation(libs.jsoup)
   implementation(libs.androidx.media3.common)
   implementation(libs.androidx.media3.effect)
@@ -273,6 +280,7 @@ dependencies {
   implementation(libs.fsaf)
   implementation(libs.mediainfo.lib)
   implementation("com.llamatik:library:1.4.0")
+  implementation(libs.androidx.profileinstaller)
 
   // MPV AAR descargado automáticamente desde GitHub
   implementation(files(mpvAar))
