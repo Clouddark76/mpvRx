@@ -28,6 +28,7 @@
     <application
         android:name=".App"
         android:appCategory="video"
+        android:extractNativeLibs="true"
         android:enableOnBackInvokedCallback="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
@@ -431,4 +432,3 @@
             android:grantUriPermissions="true" />
     </application>
 </manifest>
-
