@@ -85,13 +85,22 @@ import app.gyrolet.mpvrx.ui.browser.LocalNavigationBarHeight
 import app.gyrolet.mpvrx.ui.browser.cards.FolderCard
 import app.gyrolet.mpvrx.ui.browser.cards.VideoCard
 import app.gyrolet.mpvrx.ui.browser.cards.VideoCardUiConfig
+import app.gyrolet.mpvrx.ui.browser.components.BrowserBottomBar
 import app.gyrolet.mpvrx.ui.browser.components.BrowserTopBar
 import app.gyrolet.mpvrx.ui.browser.dialogs.DeleteConfirmationDialog
+import app.gyrolet.mpvrx.ui.browser.dialogs.FileOperationProgressDialog
+import app.gyrolet.mpvrx.ui.browser.dialogs.FolderPickerDialog
+import app.gyrolet.mpvrx.ui.browser.dialogs.RenameDialog
+import app.gyrolet.mpvrx.utils.media.CopyPasteOps
+import app.gyrolet.mpvrx.utils.media.OpenDocumentTreeContract
 import app.gyrolet.mpvrx.ui.browser.dialogs.GridColumnSelector
 import app.gyrolet.mpvrx.ui.browser.dialogs.SortDialog
+import app.gyrolet.mpvrx.ui.browser.dialogs.MultiViewModeSelector
+import app.gyrolet.mpvrx.ui.browser.dialogs.ViewModeOption
 import app.gyrolet.mpvrx.ui.browser.dialogs.ViewModeSelector
 import app.gyrolet.mpvrx.ui.browser.dialogs.VisibilityToggle
 import app.gyrolet.mpvrx.ui.browser.filesystem.FileSystemDirectoryScreen
+import app.gyrolet.mpvrx.ui.browser.medialibrary.MediaLibraryContent
 import app.gyrolet.mpvrx.ui.browser.filesystem.FileSystemBrowserRootScreen
 import app.gyrolet.mpvrx.ui.browser.selection.rememberSelectionManager
 import app.gyrolet.mpvrx.ui.browser.sheets.PlayLinkSheet
@@ -125,6 +134,7 @@ object FolderListScreen : Screen {
     when (folderViewMode) {
       FolderViewMode.FileManager -> FileSystemBrowserRootScreen.Content()
       FolderViewMode.AlbumView -> MediaStoreFolderListContent()
+      FolderViewMode.MediaLibrary -> MediaLibraryContent()
     }
   }
 
@@ -172,10 +182,16 @@ object FolderListScreen : Screen {
     val listState = rememberLazyListState()
     val gridState = rememberLazyGridState()
     val navigationBarHeight = LocalNavigationBarHeight.current
+    val navBarState = app.gyrolet.mpvrx.ui.browser.NavigationBarState
     val isRefreshing = remember { mutableStateOf(false) }
     val sortDialogOpen = rememberSaveable { mutableStateOf(false) }
     val deleteDialogOpen = rememberSaveable { mutableStateOf(false) }
     val showLinkDialog = remember { mutableStateOf(false) }
+    val folderPickerOpen = rememberSaveable { mutableStateOf(false) }
+    val operationType = remember { mutableStateOf<CopyPasteOps.OperationType?>(null) }
+    val progressDialogOpen = rememberSaveable { mutableStateOf(false) }
+    var renameDialogOpen by rememberSaveable { mutableStateOf(false) }
+    val operationProgress by CopyPasteOps.operationProgress.collectAsState()
 
     // Search state
     var searchQuery by rememberSaveable { mutableStateOf("") }
@@ -247,6 +263,32 @@ object FolderListScreen : Screen {
       onOperationComplete = { viewModel.refresh() },
     )
 
+    val treePickerLauncher = rememberLauncherForActivityResult(
+      contract = OpenDocumentTreeContract(),
+    ) { uri ->
+      if (uri == null || operationType.value == null) return@rememberLauncherForActivityResult
+      runCatching {
+        context.contentResolver.takePersistableUriPermission(
+          uri,
+          Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+        )
+      }
+      progressDialogOpen.value = true
+      coroutineScope.launch {
+        val selectedFolders = selectionManager.getSelectedItems()
+        val selectedVideos = selectedFolders.flatMap { folder ->
+          app.gyrolet.mpvrx.repository.MediaFileRepository.getVideosForBuckets(context, setOf(folder.bucketId))
+        }
+        if (selectedVideos.isNotEmpty()) {
+          when (operationType.value) {
+            is CopyPasteOps.OperationType.Copy -> CopyPasteOps.copyFilesToTreeUri(context, selectedVideos, uri)
+            is CopyPasteOps.OperationType.Move -> CopyPasteOps.moveFilesToTreeUri(context, selectedVideos, uri)
+            else -> {}
+          }
+        }
+      }
+    }
+
     // Permissions
     val permissionState = PermissionUtils.handleStoragePermission(
       onPermissionGranted = { viewModel.refresh() },
@@ -256,6 +298,14 @@ object FolderListScreen : Screen {
     LaunchedEffect(permissionState.status) {
       app.gyrolet.mpvrx.ui.browser.MainScreen.updatePermissionState(
         isDenied = permissionState.status is PermissionStatus.Denied
+      )
+    }
+
+    // Update NavigationBarState when selection mode changes
+    LaunchedEffect(selectionManager.isInSelectionMode) {
+      navBarState.updateSelectionState(
+        inSelectionMode = selectionManager.isInSelectionMode,
+        onlyVideos = false,
       )
     }
 
@@ -349,7 +399,6 @@ object FolderListScreen : Screen {
             onSettingsClick = {
               backstack.add(app.gyrolet.mpvrx.ui.preferences.PreferencesScreen)
             },
-            onDeleteClick = { deleteDialogOpen.value = true },
             onRenameClick = null,
             isSingleSelection = selectionManager.isSingleSelection,
             onInfoClick = null,
@@ -426,7 +475,7 @@ object FolderListScreen : Screen {
       },
       floatingActionButton = {
         FloatingActionButtonMenu(
-          modifier = Modifier.padding(bottom = 88.dp),
+          modifier = Modifier.padding(bottom = navigationBarHeight + 8.dp),
           expanded = isFabExpanded.value,
           button = {
             TooltipBox(
@@ -562,7 +611,7 @@ object FolderListScreen : Screen {
                   }
                 },
                 onFolderLongClick = { folder ->
-                  selectionManager.toggle(folder)
+                  selectionManager.handleLongClick(folder)
                 },
                 onTogglePin = { folder ->
                   coroutineScope.launch {
@@ -584,6 +633,39 @@ object FolderListScreen : Screen {
             )
           }
         }
+
+        if (selectionManager.isInSelectionMode) {
+          BrowserBottomBar(
+            isSelectionMode = true,
+            onCopyClick = {
+              operationType.value = CopyPasteOps.OperationType.Copy
+              if (CopyPasteOps.canUseDirectFileOperations()) {
+                folderPickerOpen.value = true
+              } else {
+                treePickerLauncher.launch(null)
+              }
+            },
+            onMoveClick = {
+              operationType.value = CopyPasteOps.OperationType.Move
+              if (CopyPasteOps.canUseDirectFileOperations()) {
+                folderPickerOpen.value = true
+              } else {
+                treePickerLauncher.launch(null)
+              }
+            },
+            onRenameClick = { renameDialogOpen = true },
+            onDeleteClick = { deleteDialogOpen.value = true },
+            onAddToPlaylistClick = { },
+            showCopy = true,
+            showMove = true,
+            showRename = selectionManager.isSingleSelection,
+            showDownscale = false,
+            showAddToPlaylist = false,
+            modifier = Modifier
+              .align(Alignment.BottomCenter)
+              .padding(bottom = if (navBarState.shouldHideNavigationBar) 0.dp else navigationBarHeight),
+          )
+        }
       }
 
       // Dialogs
@@ -592,6 +674,93 @@ object FolderListScreen : Screen {
         onDismiss = { showLinkDialog.value = false },
         onPlayLink = { url -> MediaUtils.playFile(url, context, "play_link") },
       )
+
+      FolderPickerDialog(
+        isOpen = folderPickerOpen.value,
+        currentPath = "",
+        onDismiss = { folderPickerOpen.value = false },
+        onFolderSelected = { destinationPath ->
+          folderPickerOpen.value = false
+          val op = operationType.value
+          if (op != null) {
+            coroutineScope.launch {
+              val selectedFolders = selectionManager.getSelectedItems()
+              if (selectedFolders.isNotEmpty()) {
+                when (op) {
+                  is CopyPasteOps.OperationType.Move -> {
+                    val needFallback = mutableListOf<VideoFolder>()
+                    for (folder in selectedFolders) {
+                      val dst = File(destinationPath, folder.name)
+                      if (!File(folder.path).renameTo(dst)) needFallback.add(folder)
+                    }
+                    if (needFallback.isNotEmpty()) {
+                      progressDialogOpen.value = true
+                      for (folder in needFallback) {
+                        val videos = app.gyrolet.mpvrx.repository.MediaFileRepository.getVideosForBuckets(context, setOf(folder.bucketId))
+                        if (videos.isNotEmpty()) {
+                          val subDest = File(destinationPath, folder.name).also { it.mkdirs() }.absolutePath
+                          CopyPasteOps.moveFiles(context, videos, subDest)
+                        }
+                      }
+                    } else {
+                      selectionManager.clear()
+                      viewModel.refresh()
+                    }
+                  }
+                  is CopyPasteOps.OperationType.Copy -> {
+                    progressDialogOpen.value = true
+                    for (folder in selectedFolders) {
+                      val videos = app.gyrolet.mpvrx.repository.MediaFileRepository.getVideosForBuckets(context, setOf(folder.bucketId))
+                      if (videos.isNotEmpty()) {
+                        val subDest = File(destinationPath, folder.name).also { it.mkdirs() }.absolutePath
+                        CopyPasteOps.copyFiles(context, videos, subDest)
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+      )
+
+      if (operationType.value != null) {
+        FileOperationProgressDialog(
+          isOpen = progressDialogOpen.value,
+          operationType = operationType.value!!,
+          progress = operationProgress,
+          onCancel = { CopyPasteOps.cancelOperation() },
+          onDismiss = {
+            progressDialogOpen.value = false
+            operationType.value = null
+            selectionManager.clear()
+            viewModel.refresh()
+          },
+        )
+      }
+
+      if (renameDialogOpen && selectionManager.isSingleSelection) {
+        val folder = selectionManager.getSelectedItems().firstOrNull()
+        if (folder != null) {
+          RenameDialog(
+            isOpen = true,
+            onDismiss = { renameDialogOpen = false },
+            onConfirm = { newName ->
+              renameDialogOpen = false
+              coroutineScope.launch {
+                val ok = viewModel.renameFolder(folder, newName)
+                if (!ok) {
+                  android.widget.Toast.makeText(context, "Rename failed", android.widget.Toast.LENGTH_SHORT).show()
+                }
+                selectionManager.clear()
+                viewModel.refresh()
+              }
+            },
+            currentName = folder.name,
+            itemType = "folder",
+          )
+        }
+      }
 
       FolderSortDialog(
         isOpen = sortDialogOpen.value,
@@ -995,18 +1164,28 @@ private fun FolderSortDialog(
       }
     },
     showSortOptions = isAlbumView,
-    viewModeSelector = ViewModeSelector(
+    viewModeSelector = MultiViewModeSelector(
       label = "View Mode",
-      firstOptionLabel = "Folder",
-      secondOptionLabel = "Tree",
-      firstOptionIcon = Icons.Filled.ViewModule,
-      secondOptionIcon = Icons.Filled.AccountTree,
-      isFirstOptionSelected = folderViewMode == FolderViewMode.AlbumView,
-      onViewModeChange = { isFirstOption ->
-        browserPreferences.folderViewMode.set(
-          if (isFirstOption) FolderViewMode.AlbumView else FolderViewMode.FileManager,
-        )
-      },
+      options = listOf(
+        ViewModeOption(
+          label = "Folder",
+          icon = Icons.Filled.ViewModule,
+          isSelected = folderViewMode == FolderViewMode.AlbumView,
+          onClick = { browserPreferences.folderViewMode.set(FolderViewMode.AlbumView) }
+        ),
+        ViewModeOption(
+          label = "Tree",
+          icon = Icons.Filled.AccountTree,
+          isSelected = folderViewMode == FolderViewMode.FileManager,
+          onClick = { browserPreferences.folderViewMode.set(FolderViewMode.FileManager) }
+        ),
+        ViewModeOption(
+          label = "Library",
+          icon = Icons.Filled.VideoLibrary,
+          isSelected = folderViewMode == FolderViewMode.MediaLibrary,
+          onClick = { browserPreferences.folderViewMode.set(FolderViewMode.MediaLibrary) }
+        ),
+      )
     ),
     layoutModeSelector = ViewModeSelector(
       label = "Layout",
