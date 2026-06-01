@@ -23,7 +23,6 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -104,6 +103,8 @@ fun PlaylistSheet(
   totalCount: Int = playlist.size,
   isM3UPlaylist: Boolean = false,
   playerPreferences: app.gyrolet.mpvrx.preferences.PlayerPreferences,
+  isSwipeActive: Boolean = false,
+  swipeOffset: Float = 0f,
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
@@ -165,6 +166,8 @@ fun PlaylistSheet(
     modifier = Modifier.fillMaxWidth(),
     customMaxWidth = sheetWidth,
     customMaxHeight = if (isPortrait) LocalConfiguration.current.screenHeightDp.dp * 0.5f else null,
+    isSwipeActive = isSwipeActive,
+    swipeOffset = swipeOffset,
   ) {
     Surface(
       modifier = Modifier.fillMaxWidth(),
@@ -336,7 +339,7 @@ fun PlaylistTrackListItem(
         contentAlignment = Alignment.Center,
       ) {
         Icon(
-          imageVector = Icons.Outlined.Movie,
+          imageVector = Icons.Default.SmartDisplay,
           contentDescription = null,
           tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
           modifier = Modifier.size(24.dp),
@@ -508,7 +511,7 @@ fun PlaylistTrackGridItem(
         contentAlignment = Alignment.Center,
       ) {
         Icon(
-          imageVector = Icons.Outlined.Movie,
+          imageVector = Icons.Default.SmartDisplay,
           contentDescription = null,
           tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
           modifier = Modifier.size(32.dp),

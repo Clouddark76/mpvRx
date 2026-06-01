@@ -162,6 +162,7 @@
   <string name="pref_player_gestures_pinch_to_zoom">Pinch to zoom</string>
   <string name="pref_player_gestures_horizontal_swipe_to_seek">Horizontal swipe to seek</string>
   <string name="pref_player_gestures_horizontal_swipe_to_seek_summary">Swipe left or right on screen to seek forward or backward</string>
+  <string name="pref_player_gestures_enable_center_swipe_up_gesture">Swipe up in center for playlist</string>
   <string name="pref_player_gestures_horizontal_swipe_sensitivity">Horizontal swipe sensitivity</string>
   <string name="pref_player_gestures_horizontal_swipe_sensitivity_summary">Adjust how much distance is covered per swipe</string>
   <string name="pref_player_gestures_hold_for_multiple_speed">Hold for multi - x speed</string>
@@ -314,6 +315,8 @@
   <string name="player_sheets_subtitles_color_text">Text</string>
   <string name="player_sheets_subtitles_color_border">Border</string>
   <string name="player_sheets_subtitles_color_background">Background</string>
+  <string name="player_sheets_subtitles_color_shadow">Shadow</string>
+  <string name="player_sheets_sub_ass_override_warning">Overrides are inactive for ASS/SSA format. Toggle ASS Override to customize.</string>
   <string name="player_sheets_subtitles_border_style">Border style</string>
   <string name="player_sheets_subtitles_border_style_outline_and_shadow">Outline and shadow</string>
   <string name="player_sheets_subtitles_border_style_opaque_box">Opaque box</string>
