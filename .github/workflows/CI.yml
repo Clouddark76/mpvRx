@@ -105,6 +105,35 @@ jobs:
             unzip -l "$apk" | grep "assets/py\." || echo "  (none)"
           done
 
+      # ───────────── CREATE CUT armeabi-v7a APK ─────────────
+      - name: Create armeabi-v7a cut APK
+        run: |
+          set -e
+
+          STD_DIR="app/build/outputs/apk/standard/release"
+
+          SRC_APK=$(find "$STD_DIR" \
+            \( -name "app-standard-armeabi-v7a-release-unsigned.apk" -o \
+               -name "app-standard-armeabi-v7a-release.apk" \) | head -1)
+
+          if [ ! -f "$SRC_APK" ]; then
+            echo "::error::armeabi-v7a APK not found"
+            exit 1
+          fi
+
+          CUT_APK="${SRC_APK%.apk}-cut.apk"
+
+          cp "$SRC_APK" "$CUT_APK"
+
+          zip -d "$CUT_APK" \
+            "lib/armeabi-v7a/libpython*" \
+            "lib/armeabi-v7a/libpython_bin*" \
+            "lib/armeabi-v7a/libllama_jni*" \
+            "assets/py.armeabi-v7a/*" || true
+
+          echo "Created cut APK:"
+          ls -lh "$CUT_APK"
+
       # ───────────── SIGN ─────────────
       - name: Sign APKs
         run: |
@@ -157,6 +186,7 @@ jobs:
             ["universal"]="app-standard-universal-release.apk"
             ["arm64-v8a"]="app-standard-arm64-v8a-release.apk"
             ["armeabi-v7a"]="app-standard-armeabi-v7a-release.apk"
+            ["armeabi-v7a-cut"]="app-standard-armeabi-v7a-release-cut.apk"
             ["x86"]="app-standard-x86-release.apk"
             ["x86_64"]="app-standard-x86_64-release.apk"
           )
@@ -205,6 +235,14 @@ jobs:
           path: app/build/outputs/apk/standard/release/mpvRx-armeabi-v7a-v${{ env.APP_VERSION }}-${{ env.SHORT_SHA }}.apk
           retention-days: 90
           if-no-files-found: error
+
+      - name: Upload armeabi-v7a cut
+        uses: actions/upload-artifact@v7
+        with:
+          name: mpvRx-armeabi-v7a-cut-${{ env.SHORT_SHA }}
+          path: app/build/outputs/apk/standard/release/mpvRx-armeabi-v7a-cut-v${{ env.APP_VERSION }}-${{ env.SHORT_SHA }}.apk
+          retention-days: 90
+          if-no-files-found: error   
 
       - name: Upload x86
         uses: actions/upload-artifact@v7
