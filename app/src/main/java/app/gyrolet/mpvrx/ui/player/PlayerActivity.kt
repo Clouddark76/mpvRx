@@ -695,11 +695,7 @@ class PlayerActivity :
         viewModel.panelShown,
         viewModel.controlsShown,
         playerPreferences.autoPiPOnNavigation.changes(),
-      ) { values ->
-        val sheetShown = values[0] as Sheets
-        val panelShown = values[1] as Panels
-        val controlsShown = values[2] as Boolean
-        val autoPipOnNavigation = values[3] as Boolean
+      ) { sheetShown: Sheets, panelShown: Panels, controlsShown: Boolean, autoPipOnNavigation: Boolean ->
         sheetShown != Sheets.None ||
           panelShown != Panels.None ||
           autoPipOnNavigation ||
@@ -708,7 +704,7 @@ class PlayerActivity :
         .distinctUntilChanged()
         .collect { callback.isEnabled = it }
     }
-  } // ← esta llave cierra setupBackPressHandler()
+  }
 
   private fun shouldInterceptBackPress(): Boolean =
     viewModel.sheetShown.value != Sheets.None ||
@@ -721,12 +717,10 @@ class PlayerActivity :
     val width = root.width
     val height = root.height
     if (width == 0 || height == 0) return
-
     val progress = backEvent.progress.coerceIn(0f, 1f)
     val fromRightEdge = backEvent.swipeEdge == BackEventCompat.EDGE_RIGHT
     val direction = if (fromRightEdge) -1f else 1f
     val scale = 1f - (0.045f * progress)
-
     root.animate().cancel()
     binding.controls.animate().cancel()
     root.pivotX = if (fromRightEdge) width.toFloat() else 0f
@@ -757,24 +751,20 @@ class PlayerActivity :
       viewModel.showControls()
       return
     }
-
     if (viewModel.panelShown.value != Panels.None) {
       viewModel.panelShown.update { Panels.None }
       viewModel.showControls()
       return
     }
-
     if (!viewModel.controlsShown.value) {
       viewModel.showControls()
       return
     }
-
     // Check if auto PIP is enabled - enter PIP mode instead of finishing
     if (playerPreferences.autoPiPOnNavigation.get() && isReady) {
       pipHelper.enterPipMode()
       return
     }
-
     isUserFinishing = true
     finish()
   }
