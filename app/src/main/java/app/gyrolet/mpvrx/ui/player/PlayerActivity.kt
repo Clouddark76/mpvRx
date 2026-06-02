@@ -699,19 +699,23 @@ class PlayerActivity :
       combine(
         viewModel.sheetShown,
         viewModel.panelShown,
+        viewModel.controlsShown,
         playerPreferences.autoPiPOnNavigation.changes(),
-      ) { sheetShown, panelShown, autoPipOnNavigation ->
-        sheetShown != Sheets.None || panelShown != Panels.None || autoPipOnNavigation
-      }
+    ) { sheetShown, panelShown, controlsShown, autoPipOnNavigation ->
+        sheetShown != Sheets.None || 
+        panelShown != Panels.None || 
+        autoPipOnNavigation ||
+        !controlsShown  // interceptar back cuando controles están ocultos
+    }
         .distinctUntilChanged()
         .collect { callback.isEnabled = it }
-    }
-  }
+}
 
   private fun shouldInterceptBackPress(): Boolean =
     viewModel.sheetShown.value != Sheets.None ||
       viewModel.panelShown.value != Panels.None ||
-      playerPreferences.autoPiPOnNavigation.get()
+      playerPreferences.autoPiPOnNavigation.get() ||
+      !viewModel.controlsShown.value  // añadir esta línea
 
   private fun applyPredictiveBackProgress(backEvent: BackEventCompat) {
     val root = binding.root
