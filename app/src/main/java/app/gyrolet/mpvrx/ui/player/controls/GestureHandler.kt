@@ -109,6 +109,8 @@ fun GestureHandler(
   val doubleTapSeekAreaWidth by gesturePreferences.doubleTapSeekAreaWidth.collectAsState()
   val centerVerticalSubtitlePositionGesture by gesturePreferences.centerVerticalSubtitlePositionGesture.collectAsState()
   val enableCenterSwipeUpGesture by gesturePreferences.enableCenterSwipeUpGesture.collectAsState()
+  val pinchToZoomSubtitles by gesturePreferences.pinchToZoomSubtitles.collectAsState()
+  val swipeSubtitlesToSeekDialog by gesturePreferences.swipeSubtitlesToSeekDialog.collectAsState()
   var isDoubleTapSeeking by remember { mutableStateOf(false) }
   var lastSeekRegion by remember { mutableStateOf<String?>(null) }
   var lastSeekTime by remember { mutableStateOf<Long?>(null) }
@@ -131,6 +133,7 @@ fun GestureHandler(
   val panAndZoomEnabled by playerPreferences.panAndZoomEnabled.collectAsState()
   val horizontalSwipeToSeek by playerPreferences.horizontalSwipeToSeek.collectAsState()
   val horizontalSwipeSensitivity by playerPreferences.horizontalSwipeSensitivity.collectAsState()
+  val useThumbFastSeekPreview by playerPreferences.useThumbFastSeekPreview.collectAsState()
   var isLongPressing by remember { mutableStateOf(false) }
   var isDynamicSpeedControlActive by remember { mutableStateOf(false) }
   var dynamicSpeedStartX by remember { mutableStateOf(0f) }
@@ -791,7 +794,7 @@ fun GestureHandler(
           }
         }
       }
-      .pointerInput(pinchToZoomGesture, panAndZoomEnabled, areControlsLocked, isVerticalGestureActive) {
+      .pointerInput(pinchToZoomGesture, pinchToZoomSubtitles, panAndZoomEnabled, areControlsLocked, isVerticalGestureActive) {
         if (!pinchToZoomGesture || areControlsLocked || isVerticalGestureActive) return@pointerInput
 
         // Helper: get video display dimensions at 1x (how mpv fits the video to screen)
@@ -838,6 +841,11 @@ fun GestureHandler(
           var prevMidY = 0f
           val panSmooth = floatArrayOf(0f, 0f, 0f) // smoothX, smoothY, initialized
 
+          var isSubZoomMode = false
+          var initialSubScale = 1.0f
+          var initialDist = 1.0f
+          var lastCalculatedSubScale = 1.0f
+
           awaitFirstDown(requireUnconsumed = false)
 
           do {
@@ -856,25 +864,57 @@ fun GestureHandler(
               if (prevDist == 0f) {
                 // First frame — capture baseline
                 prevDist = dist
-                zoom = MPVLib.getPropertyDouble("video-zoom")?.toFloat() ?: 0f
                 prevMidX = midX
                 prevMidY = midY
-              } else {
-                // Activate on significant pinch movement
-                if (!gestureStarted && abs(dist - prevDist) > 5f) {
-                  gestureStarted = true
-                  viewModel.playerUpdate.update { PlayerUpdates.VideoZoom }
+
+                val hasActiveSub = getTrackSelectionId("sid") > 0 || getTrackSelectionId("secondary-sid") > 0
+                val subPos = MPVLib.getPropertyInt("sub-pos") ?: subtitlesPreferences.subPos.get()
+                val subtitleScreenY = (size.height - (100 - subPos) / 0.08f).coerceIn(0f, size.height.toFloat())
+                val isCenterPinchX = midX in (size.width * 0.2f)..(size.width * 0.8f)
+                val subScale = MPVLib.getPropertyFloat("sub-scale") ?: subtitlesPreferences.subScale.get()
+                val scaleMultiplier = subScale.coerceIn(0.75f, 1.25f)
+                val lowerBound = -50f * scaleMultiplier
+                val upperBound = 200f * scaleMultiplier
+                val isSubtitlePinch = isCenterPinchX && (subtitleScreenY - midY) in lowerBound..upperBound
+
+                if (pinchToZoomSubtitles && hasActiveSub && isSubtitlePinch) {
+                  isSubZoomMode = true
+                  initialSubScale = MPVLib.getPropertyFloat("sub-scale") ?: subtitlesPreferences.subScale.get()
+                  initialDist = dist
+                  lastCalculatedSubScale = initialSubScale
+                } else {
+                  isSubZoomMode = false
+                  zoom = MPVLib.getPropertyDouble("video-zoom")?.toFloat() ?: 0f
                 }
+              } else {
+                if (isSubZoomMode) {
+                  if (!gestureStarted && abs(dist - initialDist) > 5f) {
+                    gestureStarted = true
+                  }
 
-                if (gestureStarted) {
-                  // Per-frame zoom: small delta from previous distance → naturally smooth
-                  val zoomDelta = ln((dist / prevDist).toDouble()).toFloat() * 1.2f
-                  zoom = (zoom + zoomDelta).coerceIn(-1f, 3f)
-                  viewModel.setVideoZoom(zoom)
+                  if (gestureStarted && initialDist > 0f) {
+                    val currentSubScale = (initialSubScale * (dist / initialDist)).coerceIn(0.5f, 5.0f)
+                    lastCalculatedSubScale = currentSubScale
+                    MPVLib.setPropertyFloat("sub-scale", currentSubScale)
+                    viewModel.playerUpdate.update { PlayerUpdates.SubtitleZoom(currentSubScale) }
+                  }
+                } else {
+                  // Activate on significant pinch movement
+                  if (!gestureStarted && abs(dist - prevDist) > 5f) {
+                    gestureStarted = true
+                    viewModel.playerUpdate.update { PlayerUpdates.VideoZoom }
+                  }
 
-                  // Simultaneous pan while pinching
-                  if (panAndZoomEnabled) {
-                    applyPan(midX - prevMidX, midY - prevMidY, 2f.pow(zoom), panSmooth)
+                  if (gestureStarted) {
+                    // Per-frame zoom: small delta from previous distance → naturally smooth
+                    val zoomDelta = ln((dist / prevDist).toDouble()).toFloat() * 1.2f
+                    zoom = (zoom + zoomDelta).coerceIn(-1f, 3f)
+                    viewModel.setVideoZoom(zoom)
+
+                    // Simultaneous pan while pinching
+                    if (panAndZoomEnabled) {
+                      applyPan(midX - prevMidX, midY - prevMidY, 2f.pow(zoom), panSmooth)
+                    }
                   }
                 }
 
@@ -888,6 +928,12 @@ fun GestureHandler(
               break
             }
           } while (event.changes.any { it.pressed })
+
+          if (isSubZoomMode && gestureStarted) {
+            subtitlesPreferences.subScale.set(lastCalculatedSubScale)
+          }
+
+          viewModel.playerUpdate.update { PlayerUpdates.None }
         }
       }
       // Single-finger pan (only when Pan & Zoom enabled and zoomed in)
@@ -959,17 +1005,40 @@ fun GestureHandler(
           } while (event.changes.any { it.pressed })
         }
       }
-      .pointerInput(horizontalSwipeToSeek, areControlsLocked, gesturePreferences, isVerticalGestureActive) {
+      .pointerInput(
+        horizontalSwipeToSeek,
+        useThumbFastSeekPreview,
+        areControlsLocked,
+        gesturePreferences,
+        isVerticalGestureActive,
+        swipeSubtitlesToSeekDialog,
+      ) {
         if (!horizontalSwipeToSeek || areControlsLocked || isVerticalGestureActive) return@pointerInput
 
         awaitEachGesture {
           val down = awaitFirstDown(requireUnconsumed = false)
           val startPosition = down.position
           val startTime = System.currentTimeMillis()
+
+          val hasActiveSubtitle = getTrackSelectionId("sid") > 0 || getTrackSelectionId("secondary-sid") > 0
+          val subPos = MPVLib.getPropertyInt("sub-pos") ?: subtitlesPreferences.subPos.get()
+          val subtitleScreenY = (size.height - (100 - subPos) / 0.08f).coerceIn(0f, size.height.toFloat())
+
+
+          val isCenterTouchX = startPosition.x in (size.width * 0.2f)..(size.width * 0.8f)
+          val subScale = MPVLib.getPropertyFloat("sub-scale") ?: subtitlesPreferences.subScale.get()
+          val scaleMultiplier = subScale.coerceIn(0.75f, 1.25f)
+          val lowerBound = -50f * scaleMultiplier
+          val upperBound = 200f * scaleMultiplier
+          val isSubtitleTouchY = (subtitleScreenY - startPosition.y) in lowerBound..upperBound
+
+          val isSubtitleTouch = swipeSubtitlesToSeekDialog && hasActiveSubtitle && isCenterTouchX && isSubtitleTouchY
+
           
           var gestureType: String? = null
           var hasStartedSeeking = false
           var initialVideoPosition = 0f
+          var pendingSeekPosition: Float? = null
           // Use the sensitivity preference instead of hardcoded value
           val seekSensitivity = horizontalSwipeSensitivity
           
@@ -985,6 +1054,22 @@ fun GestureHandler(
                   val deltaY = currentPosition.y - startPosition.y
                   val timeSinceStart = System.currentTimeMillis() - startTime
 
+                  if (gestureType == null && isSubtitleTouch && abs(deltaX) > 40f && abs(deltaX) > abs(deltaY) * 2f) {
+                    gestureType = "subtitle_dialog_seek"
+                    hasStartedSeeking = true
+                    val direction = if (deltaX > 0) "1" else "-1"
+                    MPVLib.command("sub-seek", direction)
+                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    viewModel.playerUpdate.update {
+                      PlayerUpdates.ShowText(if (deltaX > 0) "Next Dialog" else "Prev Dialog")
+                    }
+                    change.consume()
+                  }
+
+                  if (gestureType == "subtitle_dialog_seek") {
+                    change.consume()
+                  }
+
                   // Only activate if this is clearly a horizontal gesture
                   // and not conflicting with other gestures
                   if (gestureType == null && 
@@ -998,6 +1083,7 @@ fun GestureHandler(
                     gestureType = "horizontal_seek"
                     hasStartedSeeking = true
                     initialVideoPosition = position?.toFloat() ?: 0f
+                    pendingSeekPosition = initialVideoPosition
                     
                     // Show seekbar and start seeking mode (same as seekbar scrubbing)
                     viewModel.showSeekBar()
@@ -1010,10 +1096,12 @@ fun GestureHandler(
                     val targetPosition = (initialVideoPosition + seekAmount).coerceAtLeast(0f)
                     val maxDuration = duration?.toFloat() ?: 0f
                     val clampedPosition = targetPosition.coerceAtMost(maxDuration)
-                    
-                    // Use the same seeking mechanism as seekbar scrubbing
-                    // This will update the seekbar position and provide live preview
-                    viewModel.seekTo(clampedPosition.toInt())
+                    pendingSeekPosition = clampedPosition
+                    if (useThumbFastSeekPreview) {
+                      viewModel.updateSeekThumbnailPreview(clampedPosition, maxDuration)
+                    } else {
+                      viewModel.seekTo(clampedPosition.toInt())
+                    }
                     
                     // Format and display time position updates
                     val currentPos = clampedPosition.toInt()
@@ -1042,8 +1130,13 @@ fun GestureHandler(
               if (hasStartedSeeking) {
                 hasStartedSeeking = false
                 // Clean up seeking state without showing controls
+                if (useThumbFastSeekPreview) {
+                  viewModel.hideSeekThumbnailPreview()
+                }
                 viewModel.playerUpdate.update { PlayerUpdates.None }
-                viewModel.hideSeekBar()
+                if (gestureType == "horizontal_seek") {
+                  viewModel.hideSeekBar()
+                }
               }
               break
             }
@@ -1051,11 +1144,22 @@ fun GestureHandler(
 
           // Apply the final seek when gesture ends
           if (hasStartedSeeking) {
-            // Clear the horizontal seek update and hide seekbar after a short delay
-            coroutineScope.launch {
-              delay(300)
-              viewModel.playerUpdate.update { PlayerUpdates.None }
-              viewModel.hideSeekBar()
+            if (useThumbFastSeekPreview) {
+              pendingSeekPosition?.let { viewModel.seekTo(it.toInt()) }
+              viewModel.hideSeekThumbnailPreview()
+            }
+            if (gestureType == "subtitle_dialog_seek") {
+              coroutineScope.launch {
+                delay(300)
+                viewModel.playerUpdate.update { PlayerUpdates.None }
+              }
+            } else {
+              // Clear the horizontal seek update and hide seekbar after a short delay
+              coroutineScope.launch {
+                delay(300)
+                viewModel.playerUpdate.update { PlayerUpdates.None }
+                viewModel.hideSeekBar()
+              }
             }
           }
         }

@@ -118,11 +118,29 @@ object GesturePreferencesScreen : Screen {
 
               PreferenceDivider()
 
-              val pinchToZoomGesture by playerPreferences.pinchToZoomGesture.collectAsState()
+               val pinchToZoomGesture by playerPreferences.pinchToZoomGesture.collectAsState()
               SwitchPreference(
                 value = pinchToZoomGesture,
                 onValueChange = playerPreferences.pinchToZoomGesture::set,
                 title = { Text(stringResource(R.string.pref_player_gestures_pinch_to_zoom)) },
+              )
+
+              PreferenceDivider()
+
+              val pinchToZoomSubtitles by preferences.pinchToZoomSubtitles.collectAsState()
+              SwitchPreference(
+                value = pinchToZoomSubtitles,
+                onValueChange = preferences.pinchToZoomSubtitles::set,
+                title = { Text(stringResource(R.string.pref_player_gestures_pinch_to_zoom_subtitles)) },
+              )
+
+              PreferenceDivider()
+
+              val swipeSubtitlesToSeekDialog by preferences.swipeSubtitlesToSeekDialog.collectAsState()
+              SwitchPreference(
+                value = swipeSubtitlesToSeekDialog,
+                onValueChange = preferences.swipeSubtitlesToSeekDialog::set,
+                title = { Text(stringResource(R.string.pref_player_gestures_swipe_subtitles_to_seek_dialog)) },
               )
 
               PreferenceDivider()

@@ -236,6 +236,8 @@ class PlayerActivity :
    */
   val player by lazy { binding.player }
 
+  override fun currentThumbnailSource(): String? = currentPlayableUri
+
   // ==================== State Management ====================
 
   /**
@@ -1365,6 +1367,7 @@ class PlayerActivity :
 
     // NOW initialize MPV - it will find and load the scripts we just copied
     initializePlayerWithRendererFallback()
+    runCatching { MPVLib.setThumbnailJavaVM(applicationContext) }
     mpvInitialized = true
     Log.d(TAG, "MPV initialized")
 

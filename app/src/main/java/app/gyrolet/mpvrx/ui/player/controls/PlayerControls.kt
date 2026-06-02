@@ -136,6 +136,7 @@ import app.gyrolet.mpvrx.ui.player.controls.components.CompactSpeedIndicator
 import app.gyrolet.mpvrx.ui.player.controls.components.ControlsButton
 import app.gyrolet.mpvrx.ui.player.controls.components.MultipleSpeedPlayerUpdate
 import app.gyrolet.mpvrx.ui.player.controls.components.SeekPlayerUpdate
+import app.gyrolet.mpvrx.ui.player.controls.components.SeekThumbnailPreviewBubble
 import app.gyrolet.mpvrx.ui.player.controls.components.SeekbarWithTimers
 import app.gyrolet.mpvrx.ui.player.controls.components.SlideToUnlock
 import app.gyrolet.mpvrx.ui.player.controls.components.SpeedControlSlider
@@ -208,10 +209,12 @@ fun PlayerControls(
   val playbackSpeed by MPVLib.propFloat["speed"].collectAsState()
   val seekbarDuration = if (preciseDuration > 0) preciseDuration else duration?.toFloat() ?: 0f
   val seekState by viewModel.seekState.collectAsState()
+  val seekPreview by viewModel.seekThumbnailPreview.collectAsState()
   val doubleTapSeekAmount = seekState.amount
   val showDoubleTapOvals by playerPreferences.showDoubleTapOvals.collectAsState()
   val showSeekTime by playerPreferences.showSeekTimeWhileSeeking.collectAsState()
   val showBufferedRange by playerPreferences.showBufferedRange.collectAsState()
+  val useThumbFastSeekPreview by playerPreferences.useThumbFastSeekPreview.collectAsState()
   val safeAreaWindow by playerPreferences.safeAreaWindow.collectAsState()
   val safeAreaInsetModifier =
     if (safeAreaWindow) {
@@ -240,6 +243,7 @@ fun PlayerControls(
   val chapters by viewModel.chapters.collectAsState(persistentListOf())
   val skipSegments by viewModel.skipSegments.collectAsState(persistentListOf())
   val currentSkippableSegment by viewModel.currentSkippableSegment.collectAsState()
+  val showSkipChipAuto by viewModel.showSkipChipAuto.collectAsState()
   val playlistMode by playerPreferences.playlistMode.collectAsState()
     val haptic = LocalHapticFeedback.current
 
@@ -313,6 +317,12 @@ fun PlayerControls(
   val videoOpenAnimState by viewModel.videoOpenAnimationState.collectAsState()
   val animSpeed by playerPreferences.animationSpeed.collectAsState()
 
+  LaunchedEffect(useThumbFastSeekPreview) {
+    if (!useThumbFastSeekPreview) {
+      viewModel.hideSeekThumbnailPreview()
+    }
+  }
+
   val transparentOverlay by animateFloatAsState(
     if (controlsShown && !areControlsLocked) .8f else 0f,
     animationSpec = playerControlsExitAnimationSpec(),
@@ -339,7 +349,7 @@ fun PlayerControls(
         modifier =
           Modifier
             .align(Alignment.TopStart)
-            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
+            .then(safeAreaInsetModifier)
             .padding(top = 16.dp, start = 14.dp),
       )
     }
@@ -386,6 +396,7 @@ fun PlayerControls(
         val playerPauseButton = createRef()
         val skipSegmentChip = createRef()
         val seekbar = createRef()
+        val thumbnailPreview = createRef()
         val (playerUpdates) = createRefs()
         val (customLeftButtonsRef, customRightButtonsRef) = createRefs()
         val customButtonsPortraitRef = createRef()
@@ -552,6 +563,7 @@ fun PlayerControls(
           is PlayerUpdates.DynamicSpeedControl  -> showHoldSpeedOverlay
           is PlayerUpdates.AspectRatio           -> showAspectRatioOverlay
           is PlayerUpdates.VideoZoom             -> showZoomLevelOverlay
+          is PlayerUpdates.SubtitleZoom          -> showZoomLevelOverlay
           is PlayerUpdates.RepeatMode,
           is PlayerUpdates.Shuffle               -> showRepeatShuffleOverlay
           is PlayerUpdates.ShowText              -> showActionFeedbackOverlay
@@ -669,6 +681,14 @@ fun PlayerControls(
               val zoomPercentage = (videoZoom * 100).toInt()
               TextPlayerUpdate(
                 text = String.format("Zoom:%3d%%", zoomPercentage),
+                modifier = Modifier.widthIn(min = 112.dp),
+              )
+            }
+
+            is PlayerUpdates.SubtitleZoom -> {
+              val scaleVal = (currentPlayerUpdate as PlayerUpdates.SubtitleZoom).scale
+              TextPlayerUpdate(
+                text = String.format("Sub: %.2fx", scaleVal),
                 modifier = Modifier.widthIn(min = 112.dp),
               )
             }
@@ -973,8 +993,12 @@ fun PlayerControls(
           )
         }
 
+        val skipChipVisible =
+          currentSkippableSegment != null &&
+            ((controlsShown && !areControlsLocked) || showSkipChipAuto)
+
         AnimatedVisibility(
-          visible = controlsShown && !areControlsLocked && currentSkippableSegment != null,
+          visible = skipChipVisible,
           enter = fadeIn(playerControlsEnterAnimationSpec()),
           exit = fadeOut(playerControlsExitAnimationSpec()),
           modifier =
@@ -1260,7 +1284,7 @@ fun PlayerControls(
         }
 
         AnimatedVisibility(
-          visible = controlsShown && !areControlsLocked,
+          visible = (controlsShown || seekBarShown) && !areControlsLocked,
           enter = buildControlsEnterV(controlsAnimStyle, reduceMotion, enterMs) { it },
           exit  = buildControlsExitV(controlsAnimStyle, reduceMotion, exitMs) { it },
           modifier =
@@ -1277,7 +1301,7 @@ fun PlayerControls(
                 }
               )
               .constrainAs(seekbar) {
-                if (isPortrait) {
+                if (isPortrait && controlsShown) {
                   bottom.linkTo(playerPauseButton.top, spacing.medium)
                 } else {
                   bottom.linkTo(parent.bottom, spacing.medium)
@@ -1288,18 +1312,32 @@ fun PlayerControls(
         ) {
           val invertDuration by playerPreferences.invertDuration.collectAsState()
           val seekbarStyle by appearancePreferences.seekbarStyle.collectAsState()
+          val displayedSeekbarPosition =
+            if (useThumbFastSeekPreview && seekPreview.visible) {
+              seekPreview.positionSeconds
+            } else {
+              precisePosition
+            }
 
           SeekbarWithTimers(
-            position = precisePosition,
+            position = displayedSeekbarPosition,
             duration = if (preciseDuration > 0) preciseDuration else duration?.toFloat() ?: 0f,
             onValueChange = {
               isSeeking = true
               resetControlsTimestamp = System.currentTimeMillis()
-              viewModel.seekTo(it.toInt())
+              if (useThumbFastSeekPreview) {
+                viewModel.updateSeekThumbnailPreview(it, seekbarDuration)
+              } else {
+                viewModel.seekTo(it.toInt())
+              }
             },
-            onValueChangeFinished = {
+            onValueChangeFinished = { targetPosition ->
               isSeeking = false
               resetControlsTimestamp = System.currentTimeMillis()
+              if (useThumbFastSeekPreview) {
+                viewModel.hideSeekThumbnailPreview()
+                viewModel.seekTo(targetPosition.toInt())
+              }
               viewModel.showControls()
             },
             timersInverted = Pair(false, invertDuration),
@@ -1318,6 +1356,27 @@ fun PlayerControls(
             isPortrait = isPortrait,
           )
         }
+
+        SeekThumbnailPreviewBubble(
+          position = seekPreview.positionSeconds,
+          duration = seekbarDuration,
+          visible = useThumbFastSeekPreview && seekPreview.visible && !areControlsLocked,
+          bitmap = seekPreview.bitmap,
+          isLoading = seekPreview.isLoading,
+          isPortrait = isPortrait,
+          modifier =
+            Modifier
+              .then(navigationHorizontalPaddingModifier)
+              .zIndex(100f)
+              .constrainAs(thumbnailPreview) {
+                start.linkTo(parent.start, spacing.large)
+                end.linkTo(parent.end, spacing.large)
+                bottom.linkTo(seekbar.top, 4.dp)
+                width = Dimension.fillToConstraints
+                height = Dimension.wrapContent
+              }
+              .padding(horizontal = if (isPortrait) spacing.large else 62.dp),
+        )
 
         AnimatedVisibility(
           visible = controlsShown && !areControlsLocked,
