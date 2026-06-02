@@ -675,15 +675,12 @@ class PlayerActivity :
         override fun handleOnBackStarted(backEvent: BackEventCompat) {
           applyPredictiveBackProgress(backEvent)
         }
-
         override fun handleOnBackProgressed(backEvent: BackEventCompat) {
           applyPredictiveBackProgress(backEvent)
         }
-
         override fun handleOnBackCancelled() {
           resetPredictiveBackProgress()
         }
-
         override fun handleOnBackPressed() {
           handleBackPress()
           resetPredictiveBackProgress()
@@ -701,15 +698,20 @@ class PlayerActivity :
         viewModel.panelShown,
         viewModel.controlsShown,
         playerPreferences.autoPiPOnNavigation.changes(),
-    ) { sheetShown, panelShown, controlsShown, autoPipOnNavigation ->
-        sheetShown != Sheets.None || 
-        panelShown != Panels.None || 
-        autoPipOnNavigation ||
-        !controlsShown  // interceptar back cuando controles están ocultos
-    }
+      ) { values ->
+        val sheetShown = values[0] as Sheets
+        val panelShown = values[1] as Panels
+        val controlsShown = values[2] as Boolean
+        val autoPipOnNavigation = values[3] as Boolean
+        sheetShown != Sheets.None ||
+          panelShown != Panels.None ||
+          autoPipOnNavigation ||
+          !controlsShown
+      }
         .distinctUntilChanged()
         .collect { callback.isEnabled = it }
-}
+    }
+  }
 
   private fun shouldInterceptBackPress(): Boolean =
     viewModel.sheetShown.value != Sheets.None ||
