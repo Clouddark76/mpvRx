@@ -71,13 +71,23 @@ jobs:
             ["x86_64"]="assets/py.x86_64"
           )
 
-          ALL_PY_DIRS=("assets/py.arm64-v8a" "assets/py.armeabi-v7a" "assets/py.x86" "assets/py.x86_64")
+          ALL_PY_DIRS=(
+            "assets/py.arm64-v8a"
+            "assets/py.armeabi-v7a"
+            "assets/py.x86"
+            "assets/py.x86_64"
+          )
 
           for abi in "${!ABI_KEEP[@]}"; do
-            apk=$(find "$STD_DIR" -name "app-standard-${abi}-release-unsigned.apk" -o \
-                                     -name "app-standard-${abi}-release.apk" | head -1)
+            apk=$(find "$STD_DIR" \
+              \( -name "app-standard-${abi}-release-unsigned.apk" \
+                 -o -name "app-standard-${abi}-release.apk" \) \
+              | head -n 1)
 
-            [ -z "$apk" ] && { echo "[$abi] No APK found, skipping."; continue; }
+            [ -z "$apk" ] && {
+              echo "[$abi] No APK found, skipping."
+              continue
+            }
 
             keep="${ABI_KEEP[$abi]}"
 
@@ -91,15 +101,15 @@ jobs:
             WORK_DIR=$(mktemp -d)
             cp "$apk" "$WORK_DIR/original.apk"
 
-            cd "$WORK_DIR"
+            (
+              cd "$WORK_DIR"
 
-            for dir in "${ALL_PY_DIRS[@]}"; do
-              if [ "$dir" != "$keep" ]; then
-                zip -d original.apk "${dir}/*" || true
-              fi
-            done
-
-            cd - > /dev/null
+              for dir in "${ALL_PY_DIRS[@]}"; do
+                if [ "$dir" != "$keep" ]; then
+                  zip -d original.apk "${dir}/*" || true
+                fi
+              done
+            )
 
             cp "$WORK_DIR/original.apk" "$apk"
             rm -rf "$WORK_DIR"
@@ -116,8 +126,9 @@ jobs:
           STD_DIR="app/build/outputs/apk/standard/release"
 
           SRC_APK=$(find "$STD_DIR" \
-            -name "app-standard-armeabi-v7a-release-unsigned.apk" -o \
-               -name "app-standard-armeabi-v7a-release.apk" | head -1)
+            \( -name "app-standard-armeabi-v7a-release-unsigned.apk" \
+               -o -name "app-standard-armeabi-v7a-release.apk" \) \
+            | head -n 1)
 
           if [ ! -f "$SRC_APK" ]; then
             echo "::error::armeabi-v7a APK not found"
