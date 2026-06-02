@@ -25,6 +25,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
@@ -87,6 +88,8 @@ import app.gyrolet.mpvrx.ui.browser.cards.VideoCard
 import app.gyrolet.mpvrx.ui.browser.cards.VideoCardUiConfig
 import app.gyrolet.mpvrx.ui.browser.components.BrowserBottomBar
 import app.gyrolet.mpvrx.ui.browser.components.BrowserTopBar
+import app.gyrolet.mpvrx.ui.browser.components.ExpressiveScrollBar
+import app.gyrolet.mpvrx.ui.browser.components.fastScrollGlyph
 import app.gyrolet.mpvrx.ui.browser.dialogs.DeleteConfirmationDialog
 import app.gyrolet.mpvrx.ui.browser.dialogs.FileOperationProgressDialog
 import app.gyrolet.mpvrx.ui.browser.dialogs.FolderPickerDialog
@@ -108,6 +111,7 @@ import app.gyrolet.mpvrx.ui.browser.states.EmptyState
 import app.gyrolet.mpvrx.ui.browser.states.LoadingState
 import app.gyrolet.mpvrx.ui.browser.states.PermissionDeniedState
 import app.gyrolet.mpvrx.ui.utils.LocalBackStack
+import app.gyrolet.mpvrx.utils.clipboard.SafeClipboard
 import app.gyrolet.mpvrx.utils.history.RecentlyPlayedOps
 import app.gyrolet.mpvrx.utils.media.MediaUtils
 import app.gyrolet.mpvrx.utils.permission.PermissionUtils
@@ -117,9 +121,6 @@ import com.google.accompanist.permissions.PermissionStatus
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
-import my.nanihadesuka.compose.LazyColumnScrollbar
-import my.nanihadesuka.compose.LazyVerticalGridScrollbar
-import my.nanihadesuka.compose.ScrollbarSettings
 import org.koin.compose.koinInject
 import java.io.File
 
@@ -185,7 +186,7 @@ object FolderListScreen : Screen {
     val navBarState = app.gyrolet.mpvrx.ui.browser.NavigationBarState
     val isRefreshing = remember { mutableStateOf(false) }
     val sortDialogOpen = rememberSaveable { mutableStateOf(false) }
-    val deleteDialogOpen = rememberSaveable { mutableStateOf(false) }
+    var pendingDeleteFolders by remember { mutableStateOf<List<VideoFolder>>(emptyList()) }
     val showLinkDialog = remember { mutableStateOf(false) }
     val folderPickerOpen = rememberSaveable { mutableStateOf(false) }
     val operationType = remember { mutableStateOf<CopyPasteOps.OperationType?>(null) }
@@ -250,16 +251,39 @@ object FolderListScreen : Screen {
 
     val filteredFolders = sortedFolders
     
+    suspend fun deleteFolders(folders: List<VideoFolder>): Pair<Int, Int> {
+      var deleted = 0
+      var failed = 0
+      for (folder in folders) {
+        try {
+          val ids = setOf(folder.bucketId)
+          val videos = app.gyrolet.mpvrx.repository.MediaFileRepository.getVideosForBuckets(context, ids)
+          if (videos.isNotEmpty()) {
+            val (d, f) = viewModel.deleteVideos(videos)
+            deleted += d
+            failed += f
+          }
+          val dir = java.io.File(folder.path)
+          if (dir.exists()) {
+            if (dir.deleteRecursively()) {
+              deleted++
+            } else {
+              failed++
+            }
+          }
+        } catch (e: Exception) {
+          Log.e("FolderListScreen", "Error deleting folder ${folder.path}", e)
+          failed++
+        }
+      }
+      return Pair(deleted, failed)
+    }
+
     // Selection manager
     val selectionManager = rememberSelectionManager(
       items = sortedFolders,
       getId = { it.bucketId },
-      onDeleteItems = { folders, _ ->
-        val ids = folders.map { it.bucketId }.toSet()
-        val videos = app.gyrolet.mpvrx.repository.MediaFileRepository.getVideosForBuckets(context, ids)
-        viewModel.deleteVideos(videos)
-        Pair(videos.size, 0)
-      },
+      onDeleteItems = { folders, _ -> deleteFolders(folders) },
       onOperationComplete = { viewModel.refresh() },
     )
 
@@ -412,6 +436,12 @@ object FolderListScreen : Screen {
                 }
               }
             },
+            onCopyClick = {
+              val selectedPaths = selectionManager.getSelectedItems().map { it.path }.distinct()
+              if (selectedPaths.isNotEmpty()) {
+                SafeClipboard.copyPlainText(context, "Selected folder paths", selectedPaths.joinToString("\n"))
+              }
+            },
             onPlayClick = {
               coroutineScope.launch {
                 val selectedIds = selectionManager.getSelectedItems().map { it.bucketId }.toSet()
@@ -467,6 +497,7 @@ object FolderListScreen : Screen {
                 ).show()
               }
             },
+            onDeleteClick = { pendingDeleteFolders = selectionManager.getSelectedItems() },
             onSelectAll = { selectionManager.selectAll() },
             onInvertSelection = { selectionManager.invertSelection() },
             onDeselectAll = { selectionManager.clear() },
@@ -654,7 +685,7 @@ object FolderListScreen : Screen {
               }
             },
             onRenameClick = { renameDialogOpen = true },
-            onDeleteClick = { deleteDialogOpen.value = true },
+            onDeleteClick = { pendingDeleteFolders = selectionManager.getSelectedItems() },
             onAddToPlaylistClick = { },
             showCopy = true,
             showMove = true,
@@ -771,14 +802,33 @@ object FolderListScreen : Screen {
         onSortOrderChange = { browserPreferences.folderSortOrder.set(it) },
       )
 
-      DeleteConfirmationDialog(
-        isOpen = deleteDialogOpen.value,
-        onDismiss = { deleteDialogOpen.value = false },
-        onConfirm = { selectionManager.deleteSelected() },
-        itemType = "folder",
-        itemCount = selectionManager.selectedCount,
-        itemNames = selectionManager.getSelectedItems().map { it.name },
-      )
+      if (pendingDeleteFolders.isNotEmpty()) {
+        DeleteConfirmationDialog(
+          isOpen = true,
+          onDismiss = { pendingDeleteFolders = emptyList() },
+          onConfirm = {
+            val foldersToDelete = pendingDeleteFolders
+            pendingDeleteFolders = emptyList()
+            coroutineScope.launch {
+              runCatching {
+                val (deleted, failed) = deleteFolders(foldersToDelete)
+                if (deleted > 0) {
+                  android.widget.Toast.makeText(context, "Deleted successfully", android.widget.Toast.LENGTH_SHORT).show()
+                } else if (failed > 0) {
+                  android.widget.Toast.makeText(context, "Failed to delete", android.widget.Toast.LENGTH_SHORT).show()
+                }
+              }.onFailure {
+                android.widget.Toast.makeText(context, "Failed to delete: ${it.message}", android.widget.Toast.LENGTH_SHORT).show()
+              }
+              selectionManager.clear()
+              viewModel.refresh()
+            }
+          },
+          itemType = "folder",
+          itemCount = pendingDeleteFolders.size,
+          itemNames = pendingDeleteFolders.map { it.name },
+        )
+      }
     }
   }
 }
@@ -810,20 +860,9 @@ private fun FolderListContent(
   val showLoading = isLoading && !hasCompletedInitialLoad
   val showEmpty = folders.isEmpty() && hasCompletedInitialLoad && !foldersWereDeleted
 
-  // Scrollbar alpha animation
-  val isAtTop by remember {
-    derivedStateOf {
-      if (isGridMode) {
-        gridState.firstVisibleItemIndex == 0 && gridState.firstVisibleItemScrollOffset == 0
-      } else {
-        listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
-      }
-    }
-  }
-
   val hasEnoughItems = folders.size > 20
   val scrollbarAlpha by androidx.compose.animation.core.animateFloatAsState(
-    targetValue = if (isAtTop || !hasEnoughItems) 0f else 1f,
+    targetValue = if (hasEnoughItems) 1f else 0f,
     animationSpec = androidx.compose.animation.core.spring(
       dampingRatio = app.gyrolet.mpvrx.ui.theme.AppMotion.Effect.Alpha.dampingRatio,
       stiffness = app.gyrolet.mpvrx.ui.theme.AppMotion.Effect.Alpha.stiffness,
@@ -958,20 +997,18 @@ private fun GridContent(
     }
 
     // Scrollbar with bottom padding
-    Box(
-      modifier = Modifier
-        .fillMaxSize()
-        .padding(bottom = navigationBarHeight)
-    ) {
-      LazyVerticalGridScrollbar(
-        state = gridState,
-        settings = ScrollbarSettings(
-          thumbUnselectedColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f * scrollbarAlpha),
-          thumbSelectedColor = MaterialTheme.colorScheme.primary.copy(alpha = scrollbarAlpha),
-        ),
-      ) {
-        // Empty content - scrollbar only
-      }
+    if (folders.isNotEmpty() && scrollbarAlpha > 0.01f) {
+      ExpressiveScrollBar(
+        gridState = gridState,
+        dragLabelProvider = { index ->
+          fastScrollGlyph(folders.getOrNull(index)?.name)
+        },
+        modifier =
+          Modifier
+            .align(Alignment.CenterEnd)
+            .padding(end = 2.dp, top = 6.dp, bottom = navigationBarHeight + 6.dp)
+            .graphicsLayer { alpha = scrollbarAlpha },
+      )
     }
   }
 }
@@ -1055,20 +1092,18 @@ private fun ListContent(
     }
 
     // Scrollbar with bottom padding
-    Box(
-      modifier = Modifier
-        .fillMaxSize()
-        .padding(bottom = navigationBarHeight)
-    ) {
-      LazyColumnScrollbar(
-        state = listState,
-        settings = ScrollbarSettings(
-          thumbUnselectedColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f * scrollbarAlpha),
-          thumbSelectedColor = MaterialTheme.colorScheme.primary.copy(alpha = scrollbarAlpha),
-        ),
-      ) {
-        // Empty content - scrollbar only
-      }
+    if (folders.isNotEmpty() && scrollbarAlpha > 0.01f) {
+      ExpressiveScrollBar(
+        listState = listState,
+        dragLabelProvider = { index ->
+          fastScrollGlyph(folders.getOrNull(index)?.name)
+        },
+        modifier =
+          Modifier
+            .align(Alignment.CenterEnd)
+            .padding(end = 2.dp, top = 6.dp, bottom = navigationBarHeight + 6.dp)
+            .graphicsLayer { alpha = scrollbarAlpha },
+      )
     }
   }
 }

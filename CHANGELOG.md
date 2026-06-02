@@ -22,6 +22,7 @@ These notes are written in plain English and focus on what changed for real use.
 
 ### Browser, Library, And Storage
 
+- redesigned the Media Info page to use a premium, tabbed Material 3 interface with beautiful overview stats, container metadata detail, track summaries, and customizable sharing.
 - implemented the unified Media Library view mode.
 - added multi-select range handling, folder copy/move/rename, and SMB mutex/reconnection guards.
 - redesigned settings sections and moved progress-related options into cleaner places.
@@ -30,8 +31,12 @@ These notes are written in plain English and focus on what changed for real use.
 
 ### Gestures And Quality Of Life
 
-- **Arnab Sadhukhan** added the playlist swipe-up gesture in the player.
+- **Arnab Sadhukhan** added the playlist swipe-up gesture in the player when swiped up from middle of screen now playlists open.
 - **Arnab Sadhukhan** added auto-scroll to the currently selected theme.
+- Removed Avif / Jpeg-Xl type images from the settings selection
+- Added Font selection in the Subtitle Settings section.
+- Fixed issue of Lua script when copying specific part Copied whole Lua script.
+- added Expressive Scrollbar like in Pixel player 
 
 ## 1.3.9
 
