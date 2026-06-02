@@ -687,10 +687,7 @@ class PlayerActivity :
         }
       }
 
-    onBackPressedDispatcher.addCallback(
-      this,
-      callback,
-    )
+    onBackPressedDispatcher.addCallback(this, callback)
 
     lifecycleScope.launch {
       combine(
@@ -711,13 +708,13 @@ class PlayerActivity :
         .distinctUntilChanged()
         .collect { callback.isEnabled = it }
     }
-  }
+  } // ← esta llave cierra setupBackPressHandler()
 
   private fun shouldInterceptBackPress(): Boolean =
     viewModel.sheetShown.value != Sheets.None ||
       viewModel.panelShown.value != Panels.None ||
       playerPreferences.autoPiPOnNavigation.get() ||
-      !viewModel.controlsShown.value  // añadir esta línea
+      !viewModel.controlsShown.value
 
   private fun applyPredictiveBackProgress(backEvent: BackEventCompat) {
     val root = binding.root
