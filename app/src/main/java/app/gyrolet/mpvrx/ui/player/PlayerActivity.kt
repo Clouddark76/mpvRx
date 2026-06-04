@@ -95,6 +95,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.koin.android.ext.android.inject
 import java.io.File
+import app.gyrolet.mpvrx.utils.media.M3UParser
+import app.gyrolet.mpvrx.utils.media.M3UParseResult
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.net.HttpURLConnection
+import java.net.URL
 import java.net.URLDecoder
 
 private enum class BackgroundPlaybackStartResult {
