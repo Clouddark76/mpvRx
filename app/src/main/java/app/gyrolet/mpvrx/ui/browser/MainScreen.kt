@@ -200,8 +200,7 @@ object MainScreen : Screen {
       }
     ) { paddingValues ->
       Box(modifier = Modifier.fillMaxSize()) {
-        // Always use 80dp bottom padding regardless of navigation bar visibility
-        val fabBottomPadding = 80.dp
+        val fabBottomPadding =  80.dp 
 
         AnimatedContent(
           targetState = selectedTab,

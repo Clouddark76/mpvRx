@@ -16,8 +16,6 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import app.gyrolet.mpvrx.utils.media.OpenDocumentTreeContract
 import app.gyrolet.mpvrx.ui.theme.AppMotion
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
-import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -64,8 +62,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
@@ -95,12 +91,8 @@ import app.gyrolet.mpvrx.ui.browser.components.fastScrollGlyph
  import app.gyrolet.mpvrx.ui.browser.dialogs.FileOperationProgressDialog
  import app.gyrolet.mpvrx.ui.browser.dialogs.FolderPickerDialog
  import app.gyrolet.mpvrx.ui.browser.dialogs.RenameDialog
-import app.gyrolet.mpvrx.ui.browser.dialogs.MultiViewModeSelector
-import app.gyrolet.mpvrx.ui.browser.dialogs.SortDialog
-import app.gyrolet.mpvrx.ui.browser.dialogs.ViewModeOption
-import app.gyrolet.mpvrx.ui.browser.dialogs.ViewModeSelector
- import app.gyrolet.mpvrx.ui.browser.dialogs.VisibilityToggle
  import app.gyrolet.mpvrx.ui.browser.dialogs.VideoCompressorOverlay
+import app.gyrolet.mpvrx.ui.browser.dialogs.FileSystemSortDialog
 import app.gyrolet.mpvrx.ui.browser.selection.rememberSelectionManager
 import app.gyrolet.mpvrx.ui.browser.sheets.PlayLinkSheet
 import app.gyrolet.mpvrx.ui.browser.states.EmptyState
@@ -310,7 +302,7 @@ fun FileSystemBrowserScreen(path: String? = null) {
         mainScreenObj.updateBottomBarVisibility(showBottomNavigation)
         mainScreenObj.updateSelectionState(
           isInSelectionMode = isInSelectionMode,
-          isOnlyVideosSelected = onlyVideosSelected,
+          isOnlyVideosSelected = true,
           selectionManager = if (onlyVideosSelected) selectionManager else null
         )
         mainScreenObj.updatePermissionState(
@@ -1072,20 +1064,6 @@ private fun fileSystemSelectionId(item: FileSystemItem): String =
     is FileSystemItem.VideoFile -> "video:${item.path}"
   }
 
-private fun selectableItemAtOffset(
-  listState: LazyListState,
-  offset: Offset,
-  selectableItems: List<FileSystemItem>,
-  selectableItemIndexOffset: Int,
-): FileSystemItem? {
-  val y = offset.y.toInt()
-  val visibleItem =
-    listState.layoutInfo.visibleItemsInfo.firstOrNull { itemInfo ->
-      y >= itemInfo.offset && y < itemInfo.offset + itemInfo.size
-    } ?: return null
-
-  return selectableItems.getOrNull(visibleItem.index - selectableItemIndexOffset)
-}
 
 /**
  * Recursively collects all videos from a folder and its subfolders
@@ -1182,6 +1160,8 @@ private fun FileSystemBrowserContent(
   val showDateChip by browserPreferences.showDateChip.collectAsState()
   val showUnplayedOldVideoLabel by appearancePreferences.showUnplayedOldVideoLabel.collectAsState()
   val unplayedOldVideoDays by appearancePreferences.unplayedOldVideoDays.collectAsState()
+  val showExtensionField by browserPreferences.showExtensionField.collectAsState()
+  val showDurationField by browserPreferences.showDurationField.collectAsState()
   val videoCardUiConfig =
     remember(
       unlimitedNameLines,
@@ -1193,6 +1173,8 @@ private fun FileSystemBrowserContent(
       showDateChip,
       showUnplayedOldVideoLabel,
       unplayedOldVideoDays,
+      showExtensionField,
+      showDurationField,
     ) {
       VideoCardUiConfig(
         unlimitedNameLines = unlimitedNameLines,
@@ -1204,6 +1186,8 @@ private fun FileSystemBrowserContent(
         showDateChip = showDateChip,
         showUnplayedOldVideoLabel = showUnplayedOldVideoLabel,
         unplayedOldVideoDays = unplayedOldVideoDays,
+        showExtensionField = showExtensionField,
+        showDurationField = showDurationField,
       )
     }
 
@@ -1213,20 +1197,10 @@ private fun FileSystemBrowserContent(
   val aspect = 16f / 9f
   val thumbWidthPx = with(density) { thumbWidthDp.roundToPx() }
   val thumbHeightPx = ((thumbWidthPx.toFloat() / aspect).toInt())
-  val dragScrollScope = rememberCoroutineScope()
-  val edgeScrollThresholdPx = with(density) { 72.dp.toPx() }
-  val edgeScrollStepPx = with(density) { 42.dp.toPx() }
 
   val folders = items.filterIsInstance<FileSystemItem.Folder>()
   val videoFiles = items.filterIsInstance<FileSystemItem.VideoFile>()
   val videos = videoFiles.map { it.video }
-  val selectableItems = remember(items) {
-    buildList<FileSystemItem> {
-      addAll(folders)
-      addAll(videoFiles)
-    }
-  }
-  val selectableItemIndexOffset = if (!isAtRoot && breadcrumbs.isNotEmpty()) 1 else 0
 
   // Create a unique folderId based on the current directories
   val folderId = remember(folders, isAtRoot, breadcrumbs) {
@@ -1318,58 +1292,7 @@ private fun FileSystemBrowserContent(
         ) {
           LazyColumn(
             state = listState,
-            modifier = Modifier
-              .fillMaxSize()
-              .pointerInput(selectableItems, selectableItemIndexOffset) {
-                var lastDragSelectedId: String? = null
-                detectDragGesturesAfterLongPress(
-                  onDragStart = { offset ->
-                    val item = selectableItemAtOffset(
-                      listState = listState,
-                      offset = offset,
-                      selectableItems = selectableItems,
-                      selectableItemIndexOffset = selectableItemIndexOffset,
-                    )
-                    if (item != null) {
-                      selectionManager.select(item)
-                      lastDragSelectedId = fileSystemSelectionId(item)
-                    }
-                  },
-                  onDrag = { change, _ ->
-                    val viewportHeight = size.height.toFloat()
-                    val scrollDelta =
-                      when {
-                        change.position.y < edgeScrollThresholdPx -> -edgeScrollStepPx
-                        change.position.y > viewportHeight - edgeScrollThresholdPx -> edgeScrollStepPx
-                        else -> 0f
-                      }
-                    if (scrollDelta != 0f) {
-                      dragScrollScope.launch {
-                        listState.scrollBy(scrollDelta)
-                      }
-                    }
-
-                    val item = selectableItemAtOffset(
-                      listState = listState,
-                      offset = change.position,
-                      selectableItems = selectableItems,
-                      selectableItemIndexOffset = selectableItemIndexOffset,
-                    )
-                    val itemId = item?.let(::fileSystemSelectionId)
-                    if (item != null && itemId != null && itemId != lastDragSelectedId) {
-                      selectionManager.selectRangeTo(item)
-                      lastDragSelectedId = itemId
-                    }
-                    change.consume()
-                  },
-                  onDragEnd = {
-                    lastDragSelectedId = null
-                  },
-                  onDragCancel = {
-                    lastDragSelectedId = null
-                  },
-                )
-              },
+            modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
               start = 8.dp,
               end = 8.dp,
@@ -1406,9 +1329,9 @@ private fun FileSystemBrowserContent(
                 isSelected = selectionManager.isSelected(folder),
                 isRecentlyPlayed = false,
                 onClick = { onFolderClick(folder) },
-                onLongClick = null,
+                onLongClick = { onFolderLongClick(folder) },
                 onThumbClick = if (tapThumbnailToSelect) {
-                  { onFolderLongClick(folder) }
+                  { selectionManager.toggle(folder) }
                 } else {
                   { onFolderClick(folder) }
                 },
@@ -1428,9 +1351,9 @@ private fun FileSystemBrowserContent(
                 isRecentlyPlayed = false,
                 isSelected = selectionManager.isSelected(videoFile),
                 onClick = { onVideoClick(videoFile) },
-                onLongClick = null,
+                onLongClick = { onVideoLongClick(videoFile) },
                 onThumbClick = if (tapThumbnailToSelect) {
-                  { onVideoLongClick(videoFile) }
+                  { selectionManager.toggle(videoFile) }
                 } else {
                   { onVideoClick(videoFile) }
                 },
@@ -1502,6 +1425,8 @@ private fun FileSystemSearchContent(
   val unlimitedNameLines by appearancePreferences.unlimitedNameLines.collectAsState()
   val showUnplayedOldVideoLabel by appearancePreferences.showUnplayedOldVideoLabel.collectAsState()
   val unplayedOldVideoDays by appearancePreferences.unplayedOldVideoDays.collectAsState()
+  val showExtensionField by browserPreferences.showExtensionField.collectAsState()
+  val showDurationField by browserPreferences.showDurationField.collectAsState()
   val videoCardUiConfig =
     remember(
       unlimitedNameLines,
@@ -1513,6 +1438,8 @@ private fun FileSystemSearchContent(
       showDateChip,
       showUnplayedOldVideoLabel,
       unplayedOldVideoDays,
+      showExtensionField,
+      showDurationField,
     ) {
       VideoCardUiConfig(
         unlimitedNameLines = unlimitedNameLines,
@@ -1524,6 +1451,8 @@ private fun FileSystemSearchContent(
         showDateChip = showDateChip,
         showUnplayedOldVideoLabel = showUnplayedOldVideoLabel,
         unplayedOldVideoDays = unplayedOldVideoDays,
+        showExtensionField = showExtensionField,
+        showDurationField = showDurationField,
       )
     }
 
@@ -1689,152 +1618,5 @@ private fun FileSystemSearchContent(
   }
 }
 
-@Composable
-fun FileSystemSortDialog(
-  isOpen: Boolean,
-  onDismiss: () -> Unit,
-  isAtRoot: Boolean = true,
-) {
-  val browserPreferences = koinInject<BrowserPreferences>()
-  val appearancePreferences = koinInject<app.gyrolet.mpvrx.preferences.AppearancePreferences>()
-  val folderViewMode by browserPreferences.folderViewMode.collectAsState()
-  val folderSortType by browserPreferences.folderSortType.collectAsState()
-  val folderSortOrder by browserPreferences.folderSortOrder.collectAsState()
-  val showVideoThumbnails by browserPreferences.showVideoThumbnails.collectAsState()
-  val showTotalVideosChip by browserPreferences.showTotalVideosChip.collectAsState()
-  val showTotalSizeChip by browserPreferences.showTotalSizeChip.collectAsState()
-  val showFolderPath by browserPreferences.showFolderPath.collectAsState()
-  val showSizeChip by browserPreferences.showSizeChip.collectAsState()
-  val showResolutionChip by browserPreferences.showResolutionChip.collectAsState()
-  val showFramerateInResolution by browserPreferences.showFramerateInResolution.collectAsState()
-  val showProgressBar by browserPreferences.showProgressBar.collectAsState()
-  val showSubtitleIndicator by browserPreferences.showSubtitleIndicator.collectAsState()
-  val unlimitedNameLines by appearancePreferences.unlimitedNameLines.collectAsState()
 
-  SortDialog(
-    isOpen = isOpen,
-    onDismiss = onDismiss,
-    title = "Sort & View Options",
-    sortType = folderSortType.displayName,
-    onSortTypeChange = { typeName ->
-      app.gyrolet.mpvrx.preferences.FolderSortType.entries.find { it.displayName == typeName }?.let {
-        browserPreferences.folderSortType.set(it)
-      }
-    },
-    sortOrderAsc = folderSortOrder.isAscending,
-    onSortOrderChange = { isAsc ->
-      browserPreferences.folderSortOrder.set(
-        if (isAsc) app.gyrolet.mpvrx.preferences.SortOrder.Ascending
-        else app.gyrolet.mpvrx.preferences.SortOrder.Descending,
-      )
-    },
-    types = listOf(
-      app.gyrolet.mpvrx.preferences.FolderSortType.Title.displayName,
-      app.gyrolet.mpvrx.preferences.FolderSortType.Date.displayName,
-      app.gyrolet.mpvrx.preferences.FolderSortType.Size.displayName,
-    ),
-    icons = listOf(
-      Icons.Filled.Title,
-      Icons.Filled.CalendarToday,
-      Icons.Filled.SwapVert,
-    ),
-    getLabelForType = { type, _ ->
-      when (type) {
-        app.gyrolet.mpvrx.preferences.FolderSortType.Title.displayName -> Pair("A-Z", "Z-A")
-        app.gyrolet.mpvrx.preferences.FolderSortType.Date.displayName -> Pair("Oldest", "Newest")
-        app.gyrolet.mpvrx.preferences.FolderSortType.Size.displayName -> Pair("Smallest", "Largest")
-        else -> Pair("Asc", "Desc")
-      }
-    },
-    showSortOptions = true,
-    viewModeSelector = MultiViewModeSelector(
-      label = "View Mode",
-      options = listOf(
-        ViewModeOption(
-          label = "Folder",
-          icon = Icons.Filled.ViewModule,
-          isSelected = folderViewMode == app.gyrolet.mpvrx.preferences.FolderViewMode.AlbumView,
-          onClick = { browserPreferences.folderViewMode.set(app.gyrolet.mpvrx.preferences.FolderViewMode.AlbumView) }
-        ),
-        ViewModeOption(
-          label = "Tree",
-          icon = Icons.Filled.AccountTree,
-          isSelected = folderViewMode == app.gyrolet.mpvrx.preferences.FolderViewMode.FileManager,
-          onClick = { browserPreferences.folderViewMode.set(app.gyrolet.mpvrx.preferences.FolderViewMode.FileManager) }
-        ),
-        ViewModeOption(
-          label = "Library",
-          icon = Icons.Filled.VideoLibrary,
-          isSelected = folderViewMode == app.gyrolet.mpvrx.preferences.FolderViewMode.MediaLibrary,
-          onClick = { browserPreferences.folderViewMode.set(app.gyrolet.mpvrx.preferences.FolderViewMode.MediaLibrary) }
-        ),
-      )
-    ),
-    layoutModeSelector = ViewModeSelector(
-      label = "Layout",
-      firstOptionLabel = "List",
-      secondOptionLabel = "Grid",
-      firstOptionIcon = Icons.Filled.ViewList,
-      secondOptionIcon = Icons.Filled.GridView,
-      isFirstOptionSelected = true, // Always list mode
-      onViewModeChange = { /* Disabled - do nothing */ },
-    ),
-    folderGridColumnSelector = null,
-    videoGridColumnSelector = null,
-    enableViewModeOptions = isAtRoot,
-    enableLayoutModeOptions = false, // Disabled/grayed out
-    visibilityToggles = listOf(
-      VisibilityToggle(
-        label = "Video Thumbnails",
-        checked = showVideoThumbnails,
-        onCheckedChange = { browserPreferences.showVideoThumbnails.set(it) },
-      ),
-      VisibilityToggle(
-        label = "Full Name",
-        checked = unlimitedNameLines,
-        onCheckedChange = { appearancePreferences.unlimitedNameLines.set(it) },
-      ),
-      VisibilityToggle(
-        label = "Path",
-        checked = showFolderPath,
-        onCheckedChange = { browserPreferences.showFolderPath.set(it) },
-      ),
-      VisibilityToggle(
-        label = "Total Videos",
-        checked = showTotalVideosChip,
-        onCheckedChange = { browserPreferences.showTotalVideosChip.set(it) },
-      ),
-      VisibilityToggle(
-        label = "Folder Size",
-        checked = showTotalSizeChip,
-        onCheckedChange = { browserPreferences.showTotalSizeChip.set(it) },
-      ),
-      VisibilityToggle(
-        label = "Size",
-        checked = showSizeChip,
-        onCheckedChange = { browserPreferences.showSizeChip.set(it) },
-      ),
-      VisibilityToggle(
-        label = "Resolution",
-        checked = showResolutionChip,
-        onCheckedChange = { browserPreferences.showResolutionChip.set(it) },
-      ),
-      VisibilityToggle(
-        label = "Framerate",
-        checked = showFramerateInResolution,
-        onCheckedChange = { browserPreferences.showFramerateInResolution.set(it) },
-      ),
-      VisibilityToggle(
-        label = "Subtitle",
-        checked = showSubtitleIndicator,
-        onCheckedChange = { browserPreferences.showSubtitleIndicator.set(it) },
-      ),
-      VisibilityToggle(
-        label = "Progress Bar",
-        checked = showProgressBar,
-        onCheckedChange = { browserPreferences.showProgressBar.set(it) },
-      ),
-    )
-  )
-}
 

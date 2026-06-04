@@ -71,6 +71,9 @@ import app.gyrolet.mpvrx.ui.player.ytdlp.YtdlpManager
 import app.gyrolet.mpvrx.ui.theme.MpvrxTheme
 import app.gyrolet.mpvrx.utils.history.RecentlyPlayedOps
 import app.gyrolet.mpvrx.utils.media.HttpUtils
+import app.gyrolet.mpvrx.utils.media.JellyfinSessionReporter
+import app.gyrolet.mpvrx.utils.media.listTreeFilesSafely
+import app.gyrolet.mpvrx.utils.media.openPersistedTreeDocument
 import app.gyrolet.mpvrx.utils.media.PlaybackStateEvents
 import app.gyrolet.mpvrx.utils.media.SubtitleOps
 import app.gyrolet.mpvrx.utils.storage.FileTypeUtils
@@ -92,7 +95,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.koin.android.ext.android.inject
 import java.io.File
-import java.net.URLDecoder
 
 private enum class BackgroundPlaybackStartResult {
   Started,
@@ -334,6 +336,8 @@ class PlayerActivity :
   private var mpvInitialized = false // Track MPV initialization state
   private var savePlaybackStateJob: Job? = null // Track ongoing save job
   private var wasPlayingBeforePause = false // Track if video was playing before pause
+  private var jellyfinSessionReporter: JellyfinSessionReporter? = null
+  private var jellyfinProgressJob: Job? = null
   private val screenUnlockPlaybackController = ScreenUnlockPlaybackController()
   private var backgroundServiceSyncJob: Job? = null
   private var deferredFontSyncJob: Job? = null
@@ -344,7 +348,7 @@ class PlayerActivity :
   private var lastBackgroundThumbnailKey: String? = null
   private var lastBackgroundThumbnail: Bitmap? = null
   private var currentPlayableUri: String? = null // Store current URI for notification re-entry
-  private val playbackRenderDispatcher = Dispatchers.Default.limitedParallelism(1)
+  private val playbackRenderDispatcher = Dispatchers.Main
 
   // ==================== Background Playback ====================
 
@@ -582,7 +586,35 @@ class PlayerActivity :
       } else {
         isReady = false
         viewModel.onVideoLoadStarted()
-        player.playFile(playableUri)
+        val originalUri = extractUriFromIntent(intent)
+        val originalUriStr = originalUri?.toString().orEmpty().lowercase()
+        val fileNameLower = fileName.lowercase()
+        val isM3u = playlistId == null && playlist.isEmpty() && (
+          playableUri.lowercase().endsWith(".m3u") ||
+          playableUri.lowercase().endsWith(".m3u8") ||
+          playableUri.lowercase().contains(".m3u?") ||
+          playableUri.lowercase().contains(".m3u8?") ||
+          originalUriStr.endsWith(".m3u") ||
+          originalUriStr.endsWith(".m3u8") ||
+          originalUriStr.contains(".m3u?") ||
+          originalUriStr.contains(".m3u8?") ||
+          fileNameLower.endsWith(".m3u") ||
+          fileNameLower.endsWith(".m3u8") ||
+          (intent.type?.lowercase()?.contains("mpegurl") == true)
+        )
+        if (isM3u) {
+          lifecycleScope.launch(Dispatchers.Main) {
+            val success = loadDynamicM3uPlaylist(originalUri?.toString() ?: playableUri)
+            if (success) {
+              val targetIndex = playlistIndex.coerceIn(0, playlist.lastIndex)
+              loadPlaylistItem(targetIndex)
+            } else {
+              player.playFile(playableUri)
+            }
+          }
+        } else {
+          player.playFile(playableUri)
+        }
       }
     }
 
@@ -887,6 +919,9 @@ class PlayerActivity :
     runCatching {
       cancelSystemBarsAutoHide()
       saveVideoPlaybackState(fileName, immediate = true)
+      if (!keepBackgroundPlaybackAlive) {
+        reportJellyfinStop()
+      }
 
       // Only stop the service if we're not doing manual background playback
       if ((isUserFinishing || isFinishing) && !isManualBackgroundPlayback) {
@@ -1034,6 +1069,7 @@ class PlayerActivity :
         endBackgroundPlayback()
       }
       
+      reportJellyfinStop()
       setReturnIntent()
     }.onFailure { e ->
       Log.e(TAG, "Error during finish", e)
@@ -1054,6 +1090,7 @@ class PlayerActivity :
         endBackgroundPlayback()
       }
       
+      reportJellyfinStop()
       setReturnIntent()
     }.onFailure { e ->
       Log.e(TAG, "Error during finishAndRemoveTask", e)
@@ -2061,6 +2098,11 @@ class PlayerActivity :
   internal fun getPlaylistItemTitle(uri: Uri): String {
     getPlaylistItemByUri(uri)?.fileName?.takeIf { it.isNotBlank() }?.let { return it }
 
+    val idx = playlist.indexOf(uri)
+    if (idx != -1 && idx < networkPlaylistTitles.size) {
+      networkPlaylistTitles[idx].takeIf { it.isNotBlank() }?.let { return it }
+    }
+
     // Try content resolver first for content:// URIs
     getDisplayNameFromUri(uri)?.let { return it }
 
@@ -2072,10 +2114,25 @@ class PlayerActivity :
 
   private fun getPlaylistItemByUri(uri: Uri): PlaylistItemEntity? {
     val currentItem = getPlaylistItemByIndex(playlistIndex)
-    if (currentItem?.filePath == uri.toString()) {
+    if (currentItem != null && isSameUriOrLocalPath(currentItem.filePath, uri)) {
       return currentItem
     }
-    return playlistItems.firstOrNull { it.filePath == uri.toString() }
+    return playlistItems.firstOrNull { isSameUriOrLocalPath(it.filePath, uri) }
+  }
+
+  private fun isSameUriOrLocalPath(filePath: String, uri: Uri): Boolean {
+    if (filePath == uri.toString()) return true
+    val path1 = if (filePath.startsWith("content://") || filePath.startsWith("file://")) {
+      Uri.parse(filePath).extractLocalPath()
+    } else {
+      filePath
+    }
+    val path2 = if (uri.scheme == "content" || uri.scheme == "file") {
+      uri.extractLocalPath()
+    } else {
+      uri.toString()
+    }
+    return path1 != null && path2 != null && path1 == path2
   }
 
   private fun getEffectiveUserAgent(item: PlaylistItemEntity?): String? =
@@ -2270,6 +2327,11 @@ class PlayerActivity :
         pipHelper.updatePictureInPictureParams()
       }
     }.onFailure { /* Silently ignore PiP update failures */ }
+
+    jellyfinSessionReporter?.let { reporter ->
+      val currentPosMs = (viewModel.pos ?: 0).toLong() * 1000L
+      reporter.reportPlaybackProgress(currentPosMs, isPaused)
+    }
   }
 
   /**
@@ -2444,6 +2506,7 @@ class PlayerActivity :
     when (eventId) {
       MPVLib.MpvEvent.MPV_EVENT_FILE_LOADED -> {
         isReady = true
+        MPVLib.setPropertyString("vid", "auto")
         viewModel.onVideoLoadCompleted()
         handleFileLoaded()
       }
@@ -2489,6 +2552,13 @@ class PlayerActivity :
         extractUriFromIntent(intent)
       }
     currentUri?.let { viewModel.calculateVideoHash(it) }
+
+    reportJellyfinStop()
+    currentUri?.toString()?.let { url ->
+      jellyfinSessionReporter = JellyfinSessionReporter.create(url, lifecycleScope)
+      jellyfinSessionReporter?.reportPlaybackStart((viewModel.pos ?: 0).toLong() * 1000L)
+      startJellyfinProgressLoop()
+    }
 
     // Reset AB loop values when video changes
     viewModel.clearABLoop()
@@ -2694,26 +2764,30 @@ class PlayerActivity :
             else -> uri.toString()
           }
 
-          // Get duration and file size from MPV
-          val updatedDuration = runCatching {
-            (MPVLib.getPropertyDouble("duration") ?: 0.0).times(1000).toLong()
-          }.getOrDefault(0L)
+          // Get duration and file size from MPV on Main thread
+          var updatedDuration = 0L
+          var updatedFileSize = 0L
+          var updatedWidth = 0
+          var updatedHeight = 0
+          withContext(Dispatchers.Main) {
+            updatedDuration = runCatching {
+              (MPVLib.getPropertyDouble("duration") ?: 0.0).times(1000).toLong()
+            }.getOrDefault(0L)
 
-          val updatedFileSize = runCatching {
-            // Try multiple properties to get file size
-            MPVLib.getPropertyDouble("file-size")?.toLong()
-              ?: MPVLib.getPropertyDouble("stream-end")?.toLong()
-              ?: 0L
-          }.getOrDefault(0L)
+            updatedFileSize = runCatching {
+              MPVLib.getPropertyDouble("file-size")?.toLong()
+                ?: MPVLib.getPropertyDouble("stream-end")?.toLong()
+                ?: 0L
+            }.getOrDefault(0L)
 
-          // Get video resolution from MPV
-          val updatedWidth = runCatching {
-            MPVLib.getPropertyInt("width") ?: MPVLib.getPropertyInt("video-params/w") ?: 0
-          }.getOrDefault(0)
+            updatedWidth = runCatching {
+              MPVLib.getPropertyInt("width") ?: MPVLib.getPropertyInt("video-params/w") ?: 0
+            }.getOrDefault(0)
 
-          val updatedHeight = runCatching {
-            MPVLib.getPropertyInt("height") ?: MPVLib.getPropertyInt("video-params/h") ?: 0
-          }.getOrDefault(0)
+            updatedHeight = runCatching {
+              MPVLib.getPropertyInt("height") ?: MPVLib.getPropertyInt("video-params/h") ?: 0
+            }.getOrDefault(0)
+          }
 
           // Update metadata without thumbnail
           runCatching {
@@ -2838,8 +2912,7 @@ class PlayerActivity :
     // Cancel any previous pending save operation
     savePlaybackStateJob?.cancel()
 
-    // Launch new save job and track it
-    savePlaybackStateJob = lifecycleScope.launch(Dispatchers.IO) {
+    val saveBlock: suspend kotlinx.coroutines.CoroutineScope.() -> Unit = {
       runCatching {
         if (!immediate) {
           delay(250)
@@ -2860,6 +2933,36 @@ class PlayerActivity :
       }.onFailure { e ->
         Log.e(TAG, "Error saving playback state", e)
       }
+    }
+
+    if (immediate) {
+      kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO + kotlinx.coroutines.NonCancellable, block = saveBlock)
+    } else {
+      // Launch new save job and track it
+      savePlaybackStateJob = lifecycleScope.launch(Dispatchers.IO, block = saveBlock)
+    }
+  }
+
+  private fun startJellyfinProgressLoop() {
+    jellyfinProgressJob?.cancel()
+    jellyfinProgressJob = lifecycleScope.launch {
+      while (isActive) {
+        delay(10000) // Report progress every 10 seconds
+        val reporter = jellyfinSessionReporter ?: continue
+        val currentPosMs = (viewModel.pos ?: 0).toLong() * 1000L
+        val isPaused = viewModel.paused ?: false
+        reporter.reportPlaybackProgress(currentPosMs, isPaused)
+      }
+    }
+  }
+
+  private fun reportJellyfinStop() {
+    jellyfinProgressJob?.cancel()
+    jellyfinProgressJob = null
+    jellyfinSessionReporter?.let { reporter ->
+      val currentPosMs = (viewModel.pos ?: 0).toLong() * 1000L
+      reporter.reportPlaybackStop(currentPosMs)
+      jellyfinSessionReporter = null
     }
   }
 
@@ -2905,8 +3008,10 @@ class PlayerActivity :
     return runCatching {
       val state = playbackStateRepository.getVideoDataByTitle(mediaIdentifier)
 
-      applyPlaybackState(state)
-      applyDefaultSettings(state)
+      withContext(Dispatchers.Main) {
+        applyPlaybackState(state)
+        applyDefaultSettings(state)
+      }
 
       state != null
     }.onFailure { e ->
@@ -3113,8 +3218,15 @@ class PlayerActivity :
   private fun setReturnIntent() {
     Log.d(TAG, "Setting return intent")
 
+    val action = if ((callingPackage != null && callingPackage != packageName) ||
+      intent.getBooleanExtra("return_result", false)) {
+      "is.xyz.mpv.MPVActivity.result"
+    } else {
+      RESULT_INTENT
+    }
+
     val resultIntent =
-      Intent(RESULT_INTENT).apply {
+      Intent(action).apply {
         viewModel.pos?.let { putExtra("position", it * MILLISECONDS_TO_SECONDS) }
         viewModel.duration?.let { putExtra("duration", it * MILLISECONDS_TO_SECONDS) }
       }
@@ -3233,9 +3345,41 @@ class PlayerActivity :
       currentPlayableUri = uri
       isReady = false
       viewModel.onVideoLoadStarted()
-      // Avoid blocking UI thread while mpv opens network streams (e.g., HLS).
-      lifecycleScope.launch(Dispatchers.Default) {
-        MPVLib.command("loadfile", uri)
+      val originalUri = extractUriFromIntent(intent)
+      val originalUriStr = originalUri?.toString().orEmpty().lowercase()
+      val fileNameLower = fileName.lowercase()
+      val isM3u = playlistId == null && playlist.isEmpty() && (
+        uri.lowercase().endsWith(".m3u") ||
+        uri.lowercase().endsWith(".m3u8") ||
+        uri.lowercase().contains(".m3u?") ||
+        uri.lowercase().contains(".m3u8?") ||
+        originalUriStr.endsWith(".m3u") ||
+        originalUriStr.endsWith(".m3u8") ||
+        originalUriStr.contains(".m3u?") ||
+        originalUriStr.contains(".m3u8?") ||
+        fileNameLower.endsWith(".m3u") ||
+        fileNameLower.endsWith(".m3u8") ||
+        (intent.type?.lowercase()?.contains("mpegurl") == true)
+      )
+      if (isM3u) {
+        lifecycleScope.launch(Dispatchers.Main) {
+          val success = loadDynamicM3uPlaylist(originalUri?.toString() ?: uri)
+          if (success) {
+            val targetIndex = playlistIndex.coerceIn(0, playlist.lastIndex)
+            loadPlaylistItem(targetIndex)
+          } else {
+            lifecycleScope.launch(Dispatchers.Default) {
+              MPVLib.setPropertyString("vid", "no")
+              MPVLib.command("loadfile", uri)
+            }
+          }
+        }
+      } else {
+        // Avoid blocking UI thread while mpv opens network streams (e.g., HLS).
+        lifecycleScope.launch(Dispatchers.Default) {
+          MPVLib.setPropertyString("vid", "no")
+          MPVLib.command("loadfile", uri)
+        }
       }
     }
   }
@@ -4032,6 +4176,7 @@ class PlayerActivity :
     // Save current video's playback state before switching
     if (fileName.isNotBlank()) {
       saveVideoPlaybackState(fileName)
+      reportJellyfinStop()
     }
 
     val uri = playlist[index]
@@ -4061,7 +4206,8 @@ class PlayerActivity :
     // Update playlist play history if this is a custom playlist
     playlistId?.takeUnless(::isAllVideosPlaylist)?.let { id ->
       lifecycleScope.launch(Dispatchers.IO) {
-        val filePath = when (uri.scheme) {
+        val playlistItem = getPlaylistItemByUri(uri)
+        val filePath = playlistItem?.filePath ?: when (uri.scheme) {
           "file" -> uri.path ?: uri.toString()
           "content" -> {
             contentResolver.query(
@@ -4096,6 +4242,7 @@ class PlayerActivity :
     viewModel.onVideoLoadStarted()
 
     lifecycleScope.launch(Dispatchers.Default) {
+      MPVLib.setPropertyString("vid", "no")
       MPVLib.command("loadfile", playableUri)
     }
 
@@ -4581,6 +4728,109 @@ class PlayerActivity :
    * Check if the current playlist is an M3U playlist (sourced from database).
    */
   fun isCurrentPlaylistM3U(): Boolean = isM3uPlaylist
+
+  private suspend fun fetchM3uContent(uriString: String): String? = withContext(Dispatchers.IO) {
+    try {
+      if (uriString.startsWith("content://") || uriString.startsWith("file://")) {
+        val uri = Uri.parse(uriString)
+        contentResolver.openInputStream(uri)?.use { inputStream ->
+          BufferedReader(InputStreamReader(inputStream, "UTF-8")).use { reader ->
+            reader.readText()
+          }
+        }
+      } else if (uriString.startsWith("http://") || uriString.startsWith("https://")) {
+        val connection = URL(uriString).openConnection() as HttpURLConnection
+        connection.connectTimeout = 15000
+        connection.readTimeout = 15000
+        connection.requestMethod = "GET"
+        connection.setRequestProperty("User-Agent", "MpvRx/1.0")
+        val responseCode = connection.responseCode
+        if (responseCode == HttpURLConnection.HTTP_OK) {
+          val text = BufferedReader(InputStreamReader(connection.inputStream, "UTF-8")).use { reader ->
+            reader.readText()
+          }
+          connection.disconnect()
+          text
+        } else {
+          connection.disconnect()
+          null
+        }
+      } else if (uriString.startsWith("fd://")) {
+        val fdNum = uriString.substring(5).toIntOrNull()
+        if (fdNum != null) {
+          runCatching {
+            val fd = java.io.FileDescriptor().apply {
+              val field = java.io.FileDescriptor::class.java.getDeclaredField("descriptor")
+              field.isAccessible = true
+              field.setInt(this, fdNum)
+            }
+            val dupFd = android.system.Os.dup(fd)
+            java.io.FileInputStream(dupFd).use { inputStream ->
+              BufferedReader(InputStreamReader(inputStream, "UTF-8")).use { reader ->
+                reader.readText()
+              }
+            }
+          }.getOrNull()
+        } else {
+          null
+        }
+      } else {
+        // It could be a local file path, e.g. /storage/...
+        val file = File(uriString)
+        if (file.exists()) {
+          file.bufferedReader(Charsets.UTF_8).use { it.readText() }
+        } else {
+          null
+        }
+      }
+    } catch (e: Exception) {
+      Log.e(TAG, "Error fetching M3U content from $uriString", e)
+      null
+    }
+  }
+
+  private suspend fun loadDynamicM3uPlaylist(uriString: String): Boolean {
+    val content = fetchM3uContent(uriString) ?: return false
+    
+    // Check if HLS manifest
+    if (M3UParser.isLikelyHlsMediaManifest(content)) {
+      Log.d(TAG, "M3U file is likely an HLS manifest, playing as single stream")
+      return false
+    }
+    
+    // Resolve content URI to a local path if possible, for better base URL resolution
+    val resolvedSourceUrl = if (uriString.startsWith("content://")) {
+      Uri.parse(uriString).extractLocalPath() ?: uriString
+    } else {
+      uriString
+    }
+    
+    // Parse as M3U playlist
+    val parseResult = M3UParser.parseContent(content, resolvedSourceUrl)
+    if (parseResult is M3UParseResult.Success) {
+      val items = parseResult.items
+      if (items.isNotEmpty()) {
+        withContext(Dispatchers.Main) {
+          isM3uPlaylist = true
+          playlist = items.map { Uri.parse(it.url) }
+          networkPlaylistTitles = items.map { it.title ?: extractFileNameFromUri(Uri.parse(it.url)) }
+          networkPlaylistPaths = items.map { it.url }
+          playlistWindowOffset = 0
+          playlistTotalCount = items.size
+          
+          // Re-generate shuffled indices if shuffle is active
+          if (viewModel.shuffleEnabled.value) {
+            generateShuffledIndices()
+          }
+          
+          Log.d(TAG, "Dynamically loaded M3U playlist with ${items.size} items")
+          viewModel.refreshPlaylistItems()
+        }
+        return true
+      }
+    }
+    return false
+  }
 
   /**
    * Disables video decoding to save battery when moving to background playback.

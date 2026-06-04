@@ -27,6 +27,9 @@ class BrowserPreferences(
   val videoGridColumnsPortrait = preferenceStore.getInt("video_grid_columns_portrait", if (isTablet) 4 else 2)
   val videoGridColumnsLandscape = preferenceStore.getInt("video_grid_columns_landscape", 4)
 
+  val showExtensionField = preferenceStore.getBoolean("show_extension_field", false)
+  val showDurationField = preferenceStore.getBoolean("show_duration_field", true)
+
   // Visibility preferences for video card chips
   val showVideoThumbnails = preferenceStore.getBoolean("show_video_thumbnails", true)
   val thumbnailMode = preferenceStore.getEnum("thumbnail_mode", ThumbnailMode.Smart)
@@ -37,6 +40,7 @@ class BrowserPreferences(
   val showFramerateInResolution = preferenceStore.getBoolean("show_framerate_in_resolution", false)
   val showSubtitleIndicator = preferenceStore.getBoolean("show_subtitle_indicator", false)
   val showProgressBar = preferenceStore.getBoolean("show_progress_bar", true)
+  val centerGridTitles = preferenceStore.getBoolean("center_grid_titles", true)
   val mediaLayoutMode = preferenceStore.getEnum("media_layout_mode", MediaLayoutMode.LIST)
 
   // Visibility preferences for folder card chips
@@ -46,6 +50,7 @@ class BrowserPreferences(
   val showTotalSizeChip = preferenceStore.getBoolean("show_total_size_chip", true)
   val showDateChip = preferenceStore.getBoolean("show_date_chip", false)
   val showFolderPath = preferenceStore.getBoolean("show_folder_path", true)
+  val showFolderThumbnails = preferenceStore.getBoolean("show_folder_thumbnails", false)
 
   // Auto-scroll to last played media preference (like MX Player)
   val autoScrollToLastPlayed = preferenceStore.getBoolean("auto_scroll_to_last_played", false)

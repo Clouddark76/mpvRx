@@ -814,6 +814,17 @@ class PlayerViewModel(
       }
     }
 
+    viewModelScope.launch(playbackStateDispatcher) {
+      combine(
+        playerPreferences.customIntroKeywordsEnabled.changes(),
+        playerPreferences.customIntroKeywords.changes(),
+        playerPreferences.customOutroKeywordsEnabled.changes(),
+        playerPreferences.customOutroKeywords.changes()
+      ) { _, _, _, _ -> }.collect {
+        refreshChapterDerivedSegments(chapters.value)
+      }
+    }
+
     // Track selection is now handled by TrackSelector in PlayerActivity
 
     // Restore repeat mode and shuffle state from preferences
@@ -1059,17 +1070,23 @@ class PlayerViewModel(
 
         customButtonsScriptPaths = generatedPaths.toMap()
         deleteCustomButtonsScriptFiles(activePaths = generatedPaths.values.toSet())
-        customButtonScriptTargets
-          .filter { it.language !in generatedPaths.keys }
-          .forEach(::deactivateCustomButtonsScript)
+        withContext(Dispatchers.Main) {
+          customButtonScriptTargets
+            .filter { it.language !in generatedPaths.keys }
+            .forEach(::deactivateCustomButtonsScript)
+        }
 
         if (generatedPaths.isNotEmpty()) {
           if (isMpvReadyForCustomButtons) {
             customButtonsLoadMutex.withLock {
-              deactivateLegacyCustomButtonsScript()
+              withContext(Dispatchers.Main) {
+                deactivateLegacyCustomButtonsScript()
+              }
               generatedPaths.forEach { (language, path) ->
                 val target = customButtonScriptTargetsByLanguage[language] ?: return@forEach
-                val loaded = loadCustomButtonsScript(File(path), target)
+                val loaded = withContext(Dispatchers.Main) {
+                  loadCustomButtonsScript(File(path), target)
+                }
                 if (!loaded) {
                   android.util.Log.w("PlayerViewModel", "Failed to load ${target.fileName}")
                 }
@@ -1081,8 +1098,10 @@ class PlayerViewModel(
         } else {
           customButtonsScriptPaths = emptyMap()
           deleteCustomButtonsScriptFiles()
-          customButtonScriptTargets.forEach(::deactivateCustomButtonsScript)
-          deactivateLegacyCustomButtonsScript()
+          withContext(Dispatchers.Main) {
+            customButtonScriptTargets.forEach(::deactivateCustomButtonsScript)
+            deactivateLegacyCustomButtonsScript()
+          }
         }
       } catch (e: Exception) {
         android.util.Log.e("PlayerViewModel", "Error setting up custom buttons", e)
@@ -1099,11 +1118,16 @@ class PlayerViewModel(
         val scriptPaths = customButtonsScriptPaths
         if (scriptPaths.isEmpty()) return@withLock
 
-        deactivateLegacyCustomButtonsScript()
+        withContext(Dispatchers.Main) {
+          deactivateLegacyCustomButtonsScript()
+        }
 
         for ((language, scriptPath) in scriptPaths) {
           val target = customButtonScriptTargetsByLanguage[language] ?: continue
-          if (isCustomButtonsScriptLoaded(target)) continue
+          val isLoaded = withContext(Dispatchers.Main) {
+            isCustomButtonsScriptLoaded(target)
+          }
+          if (isLoaded) continue
 
           val file = File(scriptPath)
           if (!file.exists()) {
@@ -1112,7 +1136,9 @@ class PlayerViewModel(
             break
           }
 
-          val loaded = loadCustomButtonsScript(file, target)
+          val loaded = withContext(Dispatchers.Main) {
+            loadCustomButtonsScript(file, target)
+          }
           if (!loaded) {
             android.util.Log.w("PlayerViewModel", "${target.fileName} load failed during $reason")
           }
@@ -1384,8 +1410,8 @@ class PlayerViewModel(
               showToast("Failed to load audio file: Invalid URI")
             }
 
-        MPVLib.command("audio-add", path, "cached")
         withContext(Dispatchers.Main) {
+          MPVLib.command("audio-add", path, "cached")
           showToast("Audio track added")
         }
       }.onFailure { e ->
@@ -1436,7 +1462,9 @@ class PlayerViewModel(
           if (existingTrack != null) {
             android.util.Log.d("PlayerViewModel", "Subtitle already loaded by MPV, skipping sub-add: $mpvPath")
             if (select) {
-              runCatching { MPVLib.setPropertyInt("sid", existingTrack.id) }
+              withContext(Dispatchers.Main) {
+                runCatching { MPVLib.setPropertyInt("sid", existingTrack.id) }
+              }
             }
             // Still track it in _externalSubtitles if it's not there
             if (!_externalSubtitles.contains(uriString)) {
@@ -1448,7 +1476,9 @@ class PlayerViewModel(
           // Store mapping for reliable physical deletion later
           mpvPathToUriMap[mpvPath] = uri.toString()
 
-          MPVLib.command("sub-add", mpvPath, mode)
+          withContext(Dispatchers.Main) {
+            MPVLib.command("sub-add", mpvPath, mode)
+          }
 
           // Track external subtitle URI for persistence
           if (!_externalSubtitles.contains(uriString)) {
@@ -1644,11 +1674,13 @@ class PlayerViewModel(
       onNewContent = { srtContent ->
         realtimeSrtFile?.writeText(srtContent)
         val srtPath = realtimeSrtFile?.absolutePath ?: return@start
-        if (realtimeSrtFileAdded) {
-          MPVLib.command("sub-reload", srtPath)
-        } else {
-          MPVLib.command("sub-add", srtPath, "select")
-          realtimeSrtFileAdded = true
+        viewModelScope.launch(Dispatchers.Main) {
+          if (realtimeSrtFileAdded) {
+            MPVLib.command("sub-reload", srtPath)
+          } else {
+            MPVLib.command("sub-add", srtPath, "select")
+            realtimeSrtFileAdded = true
+          }
         }
       },
       onComplete = {
@@ -1782,11 +1814,13 @@ class PlayerViewModel(
       if (addedCount > 0) {
         // Give MPV time to register the sub-add commands
         kotlinx.coroutines.delay(300)
-        val activeSid = getTrackSelectionId("sid")
-        if (activeSid == 0) {
-          val firstExternal = subtitleTracks.value.firstOrNull { it.external == true }
-          if (firstExternal != null) {
-            runCatching { setTrackSelectionId("sid", firstExternal.id) }
+        withContext(Dispatchers.Main) {
+          val activeSid = getTrackSelectionId("sid")
+          if (activeSid == 0) {
+            val firstExternal = subtitleTracks.value.firstOrNull { it.external == true }
+            if (firstExternal != null) {
+              runCatching { setTrackSelectionId("sid", firstExternal.id) }
+            }
           }
         }
       }
@@ -2285,11 +2319,29 @@ class PlayerViewModel(
         }
       }
 
-    val hasIntro = hasKeyword(introKeywordPatterns)
+    val introKeywords = if (playerPreferences.customIntroKeywordsEnabled.get()) {
+      playerPreferences.customIntroKeywords.get()
+        .split(",")
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+    } else {
+      introKeywordPatterns
+    }
+
+    val outroKeywords = if (playerPreferences.customOutroKeywordsEnabled.get()) {
+      playerPreferences.customOutroKeywords.get()
+        .split(",")
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+    } else {
+      outroKeywordPatterns
+    }
+
+    val hasIntro = hasKeyword(introKeywords)
     val hasRecap = hasKeyword(recapKeywordPatterns)
     val hasCredits = hasKeyword(creditsKeywordPatterns)
     val hasPreview = hasKeyword(previewKeywordPatterns)
-    val hasOutro = hasKeyword(outroKeywordPatterns)
+    val hasOutro = hasKeyword(outroKeywords)
     return when {
       hasRecap -> SkipSegmentType.RECAP
       hasCredits -> SkipSegmentType.CREDITS
@@ -3607,17 +3659,20 @@ class PlayerViewModel(
 
     return activity.playlist.mapIndexed { index, uri ->
       val title = activity.getPlaylistItemTitle(uri)
-      // Path is not used for thumbnail loading - thumbnails are loaded directly from URI
-      // Keep it for cache key compatibility
-      val path = uri.toString()
+      val resolvedUri = if (uri.scheme == "content") {
+        uri.extractLocalPath()?.let { Uri.fromFile(File(it)) } ?: uri
+      } else {
+        uri
+      }
+      val path = resolvedUri.toString()
       val isCurrentlyPlaying = index == activity.playlistIndex
 
       // Try to get from cache first (synchronized access)
-      val cacheKey = uri.toString()
+      val cacheKey = resolvedUri.toString()
       val (durationStr, resolutionStr) = synchronized(metadataCache) { metadataCache[cacheKey] } ?: ("" to "")
 
       app.gyrolet.mpvrx.ui.player.controls.components.sheets.PlaylistItem(
-        uri = uri,
+        uri = resolvedUri,
         title = title,
         index = index,
         isPlaying = isCurrentlyPlaying,
@@ -3631,19 +3686,25 @@ class PlayerViewModel(
   }
 
   private fun getVideoMetadata(uri: Uri): Pair<String, String> {
+    val resolvedUri = if (uri.scheme == "content") {
+      uri.extractLocalPath()?.let { Uri.fromFile(File(it)) } ?: uri
+    } else {
+      uri
+    }
+
     // Skip metadata extraction for network streams and M3U playlists
-    if (uri.scheme?.startsWith("http") == true || uri.scheme == "rtmp" || uri.scheme == "ftp" || uri.scheme == "rtsp" || uri.scheme == "mms") {
+    if (resolvedUri.scheme?.startsWith("http") == true || resolvedUri.scheme == "rtmp" || resolvedUri.scheme == "ftp" || resolvedUri.scheme == "rtsp" || resolvedUri.scheme == "mms") {
       return "" to ""
     }
 
     // Skip M3U/M3U8 files
-    val uriString = uri.toString().lowercase()
+    val uriString = resolvedUri.toString().lowercase()
     if (uriString.contains(".m3u8") || uriString.contains(".m3u")) {
       return "" to ""
     }
 
     // Try MediaStore first (much faster - uses cached values)
-    val mediaStoreMetadata = getVideoMetadataFromMediaStore(uri)
+    val mediaStoreMetadata = getVideoMetadataFromMediaStore(resolvedUri)
     if (mediaStoreMetadata != null) {
       return mediaStoreMetadata
     }
@@ -3652,11 +3713,11 @@ class PlayerViewModel(
     val retriever = android.media.MediaMetadataRetriever()
     return try {
       // For file:// URIs, use the path directly (faster)
-      if (uri.scheme == "file") {
-        retriever.setDataSource(uri.path)
+      if (resolvedUri.scheme == "file") {
+        retriever.setDataSource(resolvedUri.path)
       } else {
         // For content:// URIs, use context
-        retriever.setDataSource(host.context, uri)
+        retriever.setDataSource(host.context, resolvedUri)
       }
 
       // Get duration
@@ -3674,7 +3735,7 @@ class PlayerViewModel(
 
       durationStr to resolutionStr
     } catch (e: Exception) {
-      android.util.Log.e("PlayerViewModel", "Failed to get video metadata for $uri", e)
+      android.util.Log.e("PlayerViewModel", "Failed to get video metadata for $resolvedUri", e)
       "" to ""
     } finally {
       try {
@@ -3861,11 +3922,17 @@ class PlayerViewModel(
   private fun loadPlaylistMetadataAsync(items: List<app.gyrolet.mpvrx.ui.player.controls.components.sheets.PlaylistItem>) {
     playlistMetadataJob?.cancel()
     playlistMetadataJob = viewModelScope.launch(Dispatchers.IO) {
-      // Skip metadata extraction for M3U playlists
+      // Skip metadata extraction for M3U playlists only if they contain network streams
       val activity = host as? PlayerActivity
       if (activity?.isCurrentPlaylistM3U() == true) {
-        Log.d(TAG, "Skipping metadata extraction for M3U playlist")
-        return@launch
+        val hasNetworkStreams = activity.playlist.any { uri ->
+          val scheme = uri.scheme?.lowercase()
+          scheme == "http" || scheme == "https" || scheme == "davs" || scheme == "smb" || scheme == "ftp" || scheme == "sftp"
+        }
+        if (hasNetworkStreams) {
+          Log.d(TAG, "Skipping metadata extraction for M3U playlist with network streams")
+          return@launch
+        }
       }
 
       val metadataItems =

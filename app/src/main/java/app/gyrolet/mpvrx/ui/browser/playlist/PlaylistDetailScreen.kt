@@ -594,6 +594,8 @@ private fun PlaylistVideoListContent(
   val showDateChip by browserPreferences.showDateChip.collectAsState()
   val showUnplayedOldVideoLabel by appearancePreferences.showUnplayedOldVideoLabel.collectAsState()
   val unplayedOldVideoDays by appearancePreferences.unplayedOldVideoDays.collectAsState()
+  val showExtensionField by browserPreferences.showExtensionField.collectAsState()
+  val showDurationField by browserPreferences.showDurationField.collectAsState()
   val videoCardUiConfig =
     remember(
       unlimitedNameLines,
@@ -605,6 +607,8 @@ private fun PlaylistVideoListContent(
       showDateChip,
       showUnplayedOldVideoLabel,
       unplayedOldVideoDays,
+      showExtensionField,
+      showDurationField,
     ) {
       VideoCardUiConfig(
         unlimitedNameLines = unlimitedNameLines,
@@ -616,6 +620,8 @@ private fun PlaylistVideoListContent(
         showDateChip = showDateChip,
         showUnplayedOldVideoLabel = showUnplayedOldVideoLabel,
         unplayedOldVideoDays = unplayedOldVideoDays,
+        showExtensionField = showExtensionField,
+        showDurationField = showDurationField,
       )
     }
 
@@ -723,6 +729,7 @@ private fun PlaylistVideoListContent(
                     isSelected = selectionManager.isSelected(item),
                     isRecentlyPlayed = item.playlistItem.id == mostRecentlyPlayedItem?.playlistItem?.id,
                     isFavorite = item.playlistItem.isFavorite,
+                    video = item.video,
                     modifier = Modifier.weight(1f),
                   )
                 } else {
@@ -734,7 +741,7 @@ private fun PlaylistVideoListContent(
                     onClick = { onVideoItemClick(item) },
                     onLongClick = { onVideoItemLongClick(item) },
                     onThumbClick = if (tapThumbnailToSelect) {
-                      { onVideoItemLongClick(item) }
+                      { selectionManager.toggle(item) }
                     } else {
                       { onVideoItemClick(item) }
                     },

@@ -90,15 +90,10 @@ import app.gyrolet.mpvrx.ui.browser.dialogs.AddToPlaylistDialog
 import app.gyrolet.mpvrx.ui.browser.dialogs.DeleteConfirmationDialog
 import app.gyrolet.mpvrx.ui.browser.dialogs.FileOperationProgressDialog
 import app.gyrolet.mpvrx.ui.browser.dialogs.FolderPickerDialog
-import app.gyrolet.mpvrx.ui.browser.dialogs.GridColumnSelector
 import app.gyrolet.mpvrx.ui.browser.dialogs.LoadingDialog
 import app.gyrolet.mpvrx.ui.browser.dialogs.RenameDialog
-import app.gyrolet.mpvrx.ui.browser.dialogs.MultiViewModeSelector
-import app.gyrolet.mpvrx.ui.browser.dialogs.SortDialog
-import app.gyrolet.mpvrx.ui.browser.dialogs.ViewModeOption
 import app.gyrolet.mpvrx.ui.browser.dialogs.VideoCompressorOverlay
-import app.gyrolet.mpvrx.ui.browser.dialogs.ViewModeSelector
-import app.gyrolet.mpvrx.ui.browser.dialogs.VisibilityToggle
+import app.gyrolet.mpvrx.ui.browser.dialogs.VideoSortDialog
 import app.gyrolet.mpvrx.ui.browser.fab.FabScrollHelper
 import app.gyrolet.mpvrx.ui.browser.selection.SelectionManager
 import app.gyrolet.mpvrx.ui.browser.selection.rememberSelectionManager
@@ -392,20 +387,7 @@ data class VideoListScreen(
         
         // Floating Material 3 Button Group overlay with animation
         // Play Store gating is intentionally bypassed here.
-        AnimatedVisibility(
-          visible = showFloatingBottomBar,
-          enter = slideInVertically(
-            animationSpec = spring(dampingRatio = AppMotion.Spatial.Expressive.dampingRatio, stiffness = AppMotion.Spatial.Expressive.stiffness),
-            initialOffsetY = { fullHeight -> fullHeight }
-          ),
-          exit = slideOutVertically(
-            animationSpec = spring(dampingRatio = AppMotion.Spatial.Standard.dampingRatio, stiffness = AppMotion.Spatial.Standard.stiffness),
-            targetOffsetY = { fullHeight -> fullHeight }
-          ),
-          modifier = Modifier
-            .align(Alignment.BottomCenter)
-            .padding(bottom = if (navBarState.shouldHideNavigationBar) 0.dp else navigationBarHeight)
-        ) {
+        if (showFloatingBottomBar) {
           BrowserBottomBar(
             isSelectionMode = true,
             onCopyClick = {
@@ -429,7 +411,10 @@ data class VideoListScreen(
             onDeleteClick = { deleteDialogOpen.value = true },
             onAddToPlaylistClick = { addToPlaylistDialogOpen.value = true },
             showDownscale = selectionManager.selectedCount == 1,
-            showRename = selectionManager.selectedCount > 0
+            showRename = selectionManager.selectedCount > 0,
+            modifier = Modifier
+              .align(Alignment.BottomCenter)
+              .padding(bottom = if (navBarState.shouldHideNavigationBar) 0.dp else navigationBarHeight)
           )
         }
       }
@@ -629,6 +614,10 @@ internal fun VideoListContent(
   val videoGridColumnsLandscape by browserPreferences.videoGridColumnsLandscape.collectAsState()
   val configuration = androidx.compose.ui.platform.LocalConfiguration.current
   val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+  val isTablet = configuration.smallestScreenWidthDp >= 600
+  val bottomPadding = if (showFloatingBottomBar) {
+    if (isTablet) 108.dp else 88.dp
+  } else 16.dp
   val preferredVideoGridColumns = if (isLandscape) videoGridColumnsLandscape else videoGridColumnsPortrait
   val videoGridColumns = remember(configuration.screenWidthDp, preferredVideoGridColumns) {
     responsiveVideoGridColumns(
@@ -647,6 +636,8 @@ internal fun VideoListContent(
   val showDateChip by browserPreferences.showDateChip.collectAsState()
   val showUnplayedOldVideoLabel by appearancePreferences.showUnplayedOldVideoLabel.collectAsState()
   val unplayedOldVideoDays by appearancePreferences.unplayedOldVideoDays.collectAsState()
+  val showExtensionField by browserPreferences.showExtensionField.collectAsState()
+  val showDurationField by browserPreferences.showDurationField.collectAsState()
   val density = LocalDensity.current
   val navigationBarHeight = app.gyrolet.mpvrx.ui.browser.LocalNavigationBarHeight.current
   // Must match the thumbnail size logic inside `VideoCard` for this screen,
@@ -666,6 +657,8 @@ internal fun VideoListContent(
       showDateChip,
       showUnplayedOldVideoLabel,
       unplayedOldVideoDays,
+      showExtensionField,
+      showDurationField,
     ) {
       VideoCardUiConfig(
         unlimitedNameLines = unlimitedNameLines,
@@ -677,6 +670,8 @@ internal fun VideoListContent(
         showDateChip = showDateChip,
         showUnplayedOldVideoLabel = showUnplayedOldVideoLabel,
         unplayedOldVideoDays = unplayedOldVideoDays,
+        showExtensionField = showExtensionField,
+        showDurationField = showDurationField,
       )
     }
 
@@ -866,7 +861,7 @@ internal fun VideoListContent(
             modifier =
               Modifier
                 .fillMaxSize()
-                .padding(bottom = navigationBarHeight),
+                .padding(bottom = if (selectionManager.isInSelectionMode) 0.dp else navigationBarHeight),
           ) {
             LazyVerticalGrid(
               columns = GridCells.Fixed(columns),
@@ -875,7 +870,7 @@ internal fun VideoListContent(
               contentPadding = PaddingValues(
                 start = 8.dp,
                 end = 8.dp,
-                bottom = if (showFloatingBottomBar) 88.dp else 16.dp,
+                bottom = bottomPadding,
               ),
               horizontalArrangement = Arrangement.spacedBy(4.dp),
               verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -897,7 +892,7 @@ internal fun VideoListContent(
                   onClick = { onVideoClick(videoWithInfo.video) },
                   onLongClick = { onVideoLongClick(videoWithInfo.video) },
                   onThumbClick = if (tapThumbnailToSelect) {
-                    { onVideoLongClick(videoWithInfo.video) }
+                    { selectionManager.toggle(videoWithInfo.video) }
                   } else {
                     { onVideoClick(videoWithInfo.video) }
                   },
@@ -929,7 +924,7 @@ internal fun VideoListContent(
             modifier =
               Modifier
                 .fillMaxSize()
-                .padding(bottom = navigationBarHeight),
+                .padding(bottom = if (selectionManager.isInSelectionMode) 0.dp else navigationBarHeight),
           ) {
             LazyColumn(
               state = listState,
@@ -937,7 +932,7 @@ internal fun VideoListContent(
               contentPadding = PaddingValues(
                 start = 8.dp,
                 end = 8.dp,
-                bottom = if (showFloatingBottomBar) 88.dp else 16.dp,
+                bottom = bottomPadding,
               ),
             ) {
               items(
@@ -957,7 +952,7 @@ internal fun VideoListContent(
                   onClick = { onVideoClick(videoWithInfo.video) },
                   onLongClick = { onVideoLongClick(videoWithInfo.video) },
                   onThumbClick = if (tapThumbnailToSelect) {
-                    { onVideoLongClick(videoWithInfo.video) }
+                    { selectionManager.toggle(videoWithInfo.video) }
                   } else {
                     { onVideoClick(videoWithInfo.video) }
                   },
@@ -1025,180 +1020,5 @@ private fun responsiveVideoGridColumns(
   return widthBasedColumns.coerceIn(1, safePreferred + 2)
 }
 
-@Composable
-internal fun VideoSortDialog(
-  isOpen: Boolean,
-  onDismiss: () -> Unit,
-  sortType: VideoSortType,
-  sortOrder: SortOrder,
-  onSortTypeChange: (VideoSortType) -> Unit,
-  onSortOrderChange: (SortOrder) -> Unit,
-) {
-  val browserPreferences = koinInject<BrowserPreferences>()
-  val videoGridColumnsPortrait by browserPreferences.videoGridColumnsPortrait.collectAsState()
-  val videoGridColumnsLandscape by browserPreferences.videoGridColumnsLandscape.collectAsState()
-  val folderGridColumnsPortrait by browserPreferences.folderGridColumnsPortrait.collectAsState()
-  val folderGridColumnsLandscape by browserPreferences.folderGridColumnsLandscape.collectAsState()
 
-  val configuration = androidx.compose.ui.platform.LocalConfiguration.current
-  val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
-
-  val videoGridColumns = if (isLandscape) videoGridColumnsLandscape else videoGridColumnsPortrait
-  val folderGridColumns = if (isLandscape) folderGridColumnsLandscape else folderGridColumnsPortrait
-  val appearancePreferences = koinInject<AppearancePreferences>()
-  val showThumbnails by browserPreferences.showVideoThumbnails.collectAsState()
-  val showSizeChip by browserPreferences.showSizeChip.collectAsState()
-  val showResolutionChip by browserPreferences.showResolutionChip.collectAsState()
-  val showFramerateInResolution by browserPreferences.showFramerateInResolution.collectAsState()
-  val showProgressBar by browserPreferences.showProgressBar.collectAsState()
-  val showDateChip by browserPreferences.showDateChip.collectAsState()
-  val showSubtitleIndicator by browserPreferences.showSubtitleIndicator.collectAsState()
-  val unlimitedNameLines by appearancePreferences.unlimitedNameLines.collectAsState()
-  val mediaLayoutMode by browserPreferences.mediaLayoutMode.collectAsState()
-  val folderViewMode by browserPreferences.folderViewMode.collectAsState()
-
-  val folderGridColumnSelector = if (mediaLayoutMode == MediaLayoutMode.GRID) {
-    GridColumnSelector(
-      label = "Folder Grid Columns (${if (isLandscape) "Landscape" else "Portrait"})",
-      currentValue = folderGridColumns,
-      onValueChange = {
-        if (isLandscape) browserPreferences.folderGridColumnsLandscape.set(it)
-        else browserPreferences.folderGridColumnsPortrait.set(it)
-      },
-      valueRange = if (isLandscape) 3f..5f else 2f..4f,
-      steps = if (isLandscape) 1 else 1,
-    )
-  } else null
-
-  val videoGridColumnSelector = if (mediaLayoutMode == MediaLayoutMode.GRID) {
-    GridColumnSelector(
-      label = "Grid Columns (${if (isLandscape) "Landscape" else "Portrait"})",
-      currentValue = videoGridColumns,
-      onValueChange = {
-        if (isLandscape) browserPreferences.videoGridColumnsLandscape.set(it)
-        else browserPreferences.videoGridColumnsPortrait.set(it)
-      },
-      valueRange = if (isLandscape) 3f..5f else 1f..3f,
-      steps = if (isLandscape) 1 else 1,
-    )
-  } else null
-
-  SortDialog(
-    isOpen = isOpen,
-    onDismiss = onDismiss,
-    title = "Sort & View Options",
-    sortType = sortType.displayName,
-    onSortTypeChange = { typeName ->
-      VideoSortType.entries.find { it.displayName == typeName }?.let(onSortTypeChange)
-    },
-    sortOrderAsc = sortOrder.isAscending,
-    onSortOrderChange = { isAsc ->
-      onSortOrderChange(if (isAsc) SortOrder.Ascending else SortOrder.Descending)
-    },
-    types =
-      listOf(
-        VideoSortType.Title.displayName,
-        VideoSortType.Duration.displayName,
-        VideoSortType.Date.displayName,
-        VideoSortType.Size.displayName,
-      ),
-    icons =
-      listOf(
-        Icons.Filled.Title,
-        Icons.Filled.AccessTime,
-        Icons.Filled.CalendarToday,
-        Icons.Filled.SwapVert,
-      ),
-    getLabelForType = { type, _ ->
-      when (type) {
-        VideoSortType.Title.displayName -> Pair("A-Z", "Z-A")
-        VideoSortType.Duration.displayName -> Pair("Shortest", "Longest")
-        VideoSortType.Date.displayName -> Pair("Oldest", "Newest")
-        VideoSortType.Size.displayName -> Pair("Smallest", "Biggest")
-        else -> Pair("Asc", "Desc")
-      }
-    },
-    viewModeSelector = MultiViewModeSelector(
-      label = "View Mode",
-      options = listOf(
-        ViewModeOption(
-          label = "Folder",
-          icon = Icons.Filled.ViewModule,
-          isSelected = folderViewMode == FolderViewMode.AlbumView,
-          onClick = { browserPreferences.folderViewMode.set(FolderViewMode.AlbumView) },
-        ),
-        ViewModeOption(
-          label = "Tree",
-          icon = Icons.Filled.AccountTree,
-          isSelected = folderViewMode == FolderViewMode.FileManager,
-          onClick = { browserPreferences.folderViewMode.set(FolderViewMode.FileManager) },
-        ),
-        ViewModeOption(
-          label = "Library",
-          icon = Icons.Filled.VideoLibrary,
-          isSelected = folderViewMode == FolderViewMode.MediaLibrary,
-          onClick = { browserPreferences.folderViewMode.set(FolderViewMode.MediaLibrary) },
-        ),
-      ),
-    ),
-    layoutModeSelector = ViewModeSelector(
-      label = "Layout",
-      firstOptionLabel = "List",
-      secondOptionLabel = "Grid",
-      firstOptionIcon = Icons.Filled.ViewList,
-      secondOptionIcon = Icons.Filled.GridView,
-      isFirstOptionSelected = mediaLayoutMode == MediaLayoutMode.LIST,
-      onViewModeChange = { isFirstOption ->
-        browserPreferences.mediaLayoutMode.set(
-          if (isFirstOption) MediaLayoutMode.LIST else MediaLayoutMode.GRID
-        )
-      },
-    ),
-    visibilityToggles =
-      listOf(
-        VisibilityToggle(
-          label = "Thumbnails",
-          checked = showThumbnails,
-          onCheckedChange = { browserPreferences.showVideoThumbnails.set(it) },
-        ),
-        VisibilityToggle(
-          label = "Subtitle Indicator",
-          checked = showSubtitleIndicator,
-          onCheckedChange = { browserPreferences.showSubtitleIndicator.set(it) },
-        ),
-        VisibilityToggle(
-          label = "Full Name",
-          checked = unlimitedNameLines,
-          onCheckedChange = { appearancePreferences.unlimitedNameLines.set(it) },
-        ),
-        VisibilityToggle(
-          label = "Size",
-          checked = showSizeChip,
-          onCheckedChange = { browserPreferences.showSizeChip.set(it) },
-        ),
-        VisibilityToggle(
-          label = "Resolution",
-          checked = showResolutionChip,
-          onCheckedChange = { browserPreferences.showResolutionChip.set(it) },
-        ),
-        VisibilityToggle(
-          label = "Framerate",
-          checked = showFramerateInResolution,
-          onCheckedChange = { browserPreferences.showFramerateInResolution.set(it) },
-        ),
-        VisibilityToggle(
-          label = "Date",
-          checked = showDateChip,
-          onCheckedChange = { browserPreferences.showDateChip.set(it) },
-        ),
-        VisibilityToggle(
-          label = "Progress Bar",
-          checked = showProgressBar,
-          onCheckedChange = { browserPreferences.showProgressBar.set(it) },
-        ),
-      ),
-    folderGridColumnSelector = folderGridColumnSelector,
-    videoGridColumnSelector = videoGridColumnSelector,
-  )
-}
 
