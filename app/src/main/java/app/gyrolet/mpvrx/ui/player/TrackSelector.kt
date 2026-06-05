@@ -310,33 +310,41 @@ private suspend fun ensureSubtitleTrackSelected(tracks: List<Track>, hasState: B
         }
       }
 
-      // PASS B-FORCED: FORCED TRACK MATCHING ACTIVE AUDIO LANGUAGE
-      // Si hay un sub forced cuyo lang coincide con el audio activo, tiene prioridad absoluta
-      // sobre el sub normal del mismo idioma. Ej: audio es-419 → sub forced es-419 wins.
+      // PASS B-FORCED: FORCED TRACK MATCHING AUDIO OR PREFERRED LANG
       val activeAudioLang = run {
-        val aid = MPVLib.getPropertyInt("aid") ?: -1
-        if (aid <= 0) null
-        else tracks.firstOrNull { it.type == "audio" && it.id == aid }?.lang
+          val aid = MPVLib.getPropertyInt("aid") ?: -1
+          if (aid <= 0) null
+          else tracks.firstOrNull { it.type == "audio" && it.id == aid }?.lang
       }
 
-      if (activeAudioLang != null) {
-        for (track in subTracks) {
-          if (!track.forced) continue
-          if (ignoreSubs.none { track.title.contains(it) } && !track.hearing) {
-            // Coincidencia exacta o por prefijo con el audio activo
-            if (track.lang == activeAudioLang || track.lang.startsWith(activeAudioLang) ||
-                activeAudioLang.startsWith(track.lang)
-            ) {
-              if (currentSid == track.id) {
-                Log.d(TAG, "Smart Sub: Forced track matching active audio lang '${activeAudioLang}' (id=${track.id}) [Already Active. Skipping Change.]")
-              } else {
-                Log.d(TAG, "Smart Sub: Forced track matching active audio lang '${activeAudioLang}' (id=${track.id}) [Applied]")
-                setTrackSelectionId("sid", track.id)
+      // Construir candidatos de idioma: audio activo + preferred langs
+      val forcedMatchLangs = buildSet {
+          activeAudioLang?.let { add(it) }
+          addAll(preferredLangs)
+      }
+
+      if (forcedMatchLangs.isNotEmpty()) {
+          for (track in subTracks) {
+              if (!track.forced) continue
+              if (track.hearing) continue
+              if (ignoreSubs.any { track.title.contains(it) }) continue
+              
+              val matched = forcedMatchLangs.any { candidate ->
+                  // Coincidencia exacta o candidate es prefix de track.lang
+                  // NO al revés (evita falsos positivos de "es" matcheando "es-419" forced erróneo)
+                  track.lang == candidate || track.lang.startsWith("$candidate-") || 
+                  candidate.startsWith("${track.lang}-")
               }
-              return
-            }
+              if (matched) {
+                  if (currentSid == track.id) {
+                      Log.d(TAG, "Smart Sub: Forced track (id=${track.id}) [Already Active. Skipping Change.]")
+                  } else {
+                      Log.d(TAG, "Smart Sub: Forced track lang='${track.lang}' (id=${track.id}) [Applied]")
+                      setTrackSelectionId("sid", track.id)
+                  }
+                  return
+              }
           }
-        }
       }
 
       // PASS B: CLEAN LANGUAGE MATCH
