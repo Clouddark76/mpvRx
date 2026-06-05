@@ -14,31 +14,36 @@ import kotlinx.coroutines.withContext
  * Adapted from https://github.com/Chinna95P/mpv-anime-build/blob/main/scripts/track-selector.lua
  *
  * **Performance Optimization:**
- * To minimize expensive JNI calls to MPV, all track properties are read exactly once 
- * upon file load and cached into a list of `Track` objects. The selection logic 
+ * To minimize expensive JNI calls to MPV, all track properties are read exactly once
+ * upon file load and cached into a list of `Track` objects. The selection logic
  * evaluates this cached list.
  *
  * **State Management (Watch-Later):**
- * If a file is resumed (`hasState = true`), any previously saved track selections—or 
- * a manually saved "subtitles off" state—are strictly respected, completely bypassing 
+ * If a file is resumed (`hasState = true`), any previously saved track selections—or
+ * a manually saved "subtitles off" state—are strictly respected, completely bypassing
  * the auto-selection engine.
  *
  * **Audio Selection Strategy (Highest to Lowest Priority):**
- * 1. **Preferred Clean Audio:** Matches the user's preferred language while explicitly 
+ * 1. **Preferred Clean Audio:** Matches the user's preferred language while explicitly
  * filtering out non-main tracks (e.g., commentary, ADH, descriptions).
- * 2. **Fallback Clean Audio:** Selects the first available track that does not contain 
+ * 2. **Fallback Clean Audio:** Selects the first available track that does not contain
  * ignored keywords.
  *
  * **Subtitle Selection Strategy (Highest to Lowest Priority):**
  * Subtitle selection is highly dependent on the auto-detected media context (Anime vs. Live-Action).
  * - **Pass 00 (External Override):** Automatically prioritizes manually loaded external subtitle files.
- * - **Pass A0 (Anime Only - Native Default):** If exactly *one* subtitle track is flagged 
- * as default and it is Japanese, it is selected. This protects against muxing errors 
- * where multiple tracks are incorrectly flagged as default by the encoder.
- * - **Pass A (Anime Only - Smart Dialogue):** Prioritizes tracks matching the preferred 
- * language that contain keywords like "dialogue", "full", or "script".
- * - **Pass B (Clean Match):** Finds the preferred language but aggressively strips out 
- * secondary tracks like "signs", "songs", "lyrics", "sdh", or "forced".
+ * - **Pass A0 (Anime Only - Native Default):** If exactly *one* subtitle track is flagged
+ *   as default and it is Japanese, it is selected. This protects against muxing errors
+ *   where multiple tracks are incorrectly flagged as default by the encoder.
+ * - **Pass A (Anime Only - Smart Dialogue):** Prioritizes tracks matching the preferred
+ *   language that contain keywords like "dialogue", "full", or "script".
+ * - **Pass B-FORCED (Forced Match):** Selects a forced track (by flag or by fansub title
+ *   convention "(F)"/"[F]") whose language matches the active audio or preferred languages.
+ * - **Pass B-DEFAULT (Default Match):** When no forced track exists, selects a track
+ *   flagged as default by the encoder whose language matches the preferred languages.
+ *   This respects the muxer's intent before falling back to positional order.
+ * - **Pass B (Clean Match):** Finds the preferred language but aggressively strips out
+ *   secondary tracks like "signs", "songs", "lyrics", "sdh", or "forced".
  * - **Pass C (Last Resort):** Selects the first available track matching the preferred language.
  * - **Pass D (Title-Name Fallback):** For tracks where the encoder left the language tag
  *   empty or set it to "und"/"zxx", matches by common descriptive titles such as
@@ -47,13 +52,18 @@ import kotlinx.coroutines.withContext
  * - **Pass E (Single Clean Track):** If exactly one non-signs/non-SDH subtitle track
  *   exists (regardless of language), it is selected as the unambiguous dialogue track.
  */
- 
+
 class TrackSelector(
   private val audioPreferences: AudioPreferences,
   private val subtitlesPreferences: SubtitlesPreferences,
 ) {
   companion object {
     private const val TAG = "TrackSelector"
+
+    // Fansub title conventions used to indicate a "full/forced" subtitle track
+    // when the encoder did not set the Matroska forced flag.
+    // Matched against the lowercased track title.
+    private val TITLE_FORCED_PATTERNS = listOf("(f)", "[f]", "(forced)", "[forced]")
   }
 
   // The Data Class for massively improved performance.
@@ -64,6 +74,9 @@ class TrackSelector(
     val title: String,
     val isDefault: Boolean,
     val forced: Boolean,
+    // True when the track has no forced flag but its title uses a fansub
+    // convention such as "(F)" or "[F]" to signal a forced/full track.
+    val isTitleForced: Boolean,
     val hearing: Boolean,
     val external: Boolean,
     val image: Boolean
@@ -72,7 +85,7 @@ class TrackSelector(
   suspend fun onFileLoaded(hasState: Boolean = false) = withContext(Dispatchers.Main) {
     var attempts = 0
     val maxAttempts = 20
-    
+
     while (attempts < maxAttempts) {
       val count = MPVLib.getPropertyInt("track-list/count") ?: 0
       if (count > 0) break
@@ -90,7 +103,7 @@ class TrackSelector(
       Log.d(TAG, "Smart Tracks: Audio/Image file detected. Script disabled.")
       return@withContext
     }
-  
+
     ensureAudioTrackSelected(tracks, hasState)
     ensureSubtitleTrackSelected(tracks, hasState)
   }
@@ -100,15 +113,17 @@ class TrackSelector(
     for (i in 0 until count) {
       val id = MPVLib.getPropertyInt("track-list/$i/id") ?: continue
       val type = MPVLib.getPropertyString("track-list/$i/type") ?: continue
+      val title = (MPVLib.getPropertyString("track-list/$i/title") ?: "").lowercase()
 
       list.add(
         Track(
           id = id,
           type = type,
           lang = (MPVLib.getPropertyString("track-list/$i/lang") ?: "").lowercase(),
-          title = (MPVLib.getPropertyString("track-list/$i/title") ?: "").lowercase(),
+          title = title,
           isDefault = MPVLib.getPropertyBoolean("track-list/$i/default") ?: false,
           forced = MPVLib.getPropertyBoolean("track-list/$i/forced") ?: false,
+          isTitleForced = TITLE_FORCED_PATTERNS.any { title.contains(it) },
           hearing = MPVLib.getPropertyBoolean("track-list/$i/hearing-impaired") ?: false,
           external = MPVLib.getPropertyBoolean("track-list/$i/external") ?: false,
           image = MPVLib.getPropertyBoolean("track-list/$i/image") ?: false
@@ -148,7 +163,7 @@ class TrackSelector(
 
     val signalFolder = isAnimeFolder(path)
     val signalLiveAction = isLiveAction(path, title)
-    
+
     val syntaxRegex = Regex("\\[.*\\]")
     val signalSyntax = syntaxRegex.containsMatchIn(title)
 
@@ -160,7 +175,7 @@ class TrackSelector(
     if (signalLiveAction) return false
     if (signalCrc) return true
     if (signalFolder || signalAudio || signalSyntax) return true
-    
+
     return false
   }
 
@@ -224,7 +239,7 @@ class TrackSelector(
   // 2. SUBTITLE SELECTION LOGIC (Multi-Pass Preserved)
   // ==================================================
 
-private suspend fun ensureSubtitleTrackSelected(tracks: List<Track>, hasState: Boolean) {
+  private suspend fun ensureSubtitleTrackSelected(tracks: List<Track>, hasState: Boolean) {
     try {
       val currentSid = getTrackSelectionId("sid")
 
@@ -310,48 +325,73 @@ private suspend fun ensureSubtitleTrackSelected(tracks: List<Track>, hasState: B
         }
       }
 
-      // PASS B-FORCED: FORCED TRACK MATCHING AUDIO OR PREFERRED LANG
+      // PASS B-FORCED: FORCED TRACK MATCHING ACTIVE AUDIO OR PREFERRED LANG
+      // Selects a forced track (by Matroska flag OR fansub title convention like "(F)"/"[F]")
+      // whose language matches the active audio track or the user's preferred languages.
+      // This covers both properly flagged forced tracks and common fansub encoding practices.
       val activeAudioLang = run {
-          val aid = MPVLib.getPropertyInt("aid") ?: -1
-          if (aid <= 0) null
-          else tracks.firstOrNull { it.type == "audio" && it.id == aid }?.lang
+        val aid = MPVLib.getPropertyInt("aid") ?: -1
+        if (aid <= 0) null
+        else tracks.firstOrNull { it.type == "audio" && it.id == aid }?.lang
       }
 
-      // Construir candidatos de idioma: audio activo + preferred langs
       val forcedMatchLangs = buildSet {
-          activeAudioLang?.let { add(it) }
-          addAll(preferredLangs)
+        activeAudioLang?.let { add(it) }
+        addAll(preferredLangs)
       }
 
       if (forcedMatchLangs.isNotEmpty()) {
-          for (track in subTracks) {
-              if (!track.forced) continue
-              if (track.hearing) continue
-              if (ignoreSubs.any { track.title.contains(it) }) continue
-              
-              val matched = forcedMatchLangs.any { candidate ->
-                  // Coincidencia exacta o candidate es prefix de track.lang
-                  // NO al revés (evita falsos positivos de "es" matcheando "es-419" forced erróneo)
-                  track.lang == candidate || track.lang.startsWith("$candidate-") || 
-                  candidate.startsWith("${track.lang}-")
-              }
-              if (matched) {
-                  if (currentSid == track.id) {
-                      Log.d(TAG, "Smart Sub: Forced track (id=${track.id}) [Already Active. Skipping Change.]")
-                  } else {
-                      Log.d(TAG, "Smart Sub: Forced track lang='${track.lang}' (id=${track.id}) [Applied]")
-                      setTrackSelectionId("sid", track.id)
-                  }
-                  return
-              }
+        for (track in subTracks) {
+          val isEffectivelyForced = track.forced || track.isTitleForced
+          if (!isEffectivelyForced) continue
+          if (track.hearing) continue
+          if (ignoreSubs.any { track.title.contains(it) }) continue
+
+          val matched = forcedMatchLangs.any { candidate ->
+            track.lang == candidate ||
+            track.lang.startsWith("$candidate-") ||
+            candidate.startsWith("${track.lang}-")
           }
+          if (matched) {
+            if (currentSid == track.id) {
+              Log.d(TAG, "Smart Sub: Forced track (isTitleForced=${track.isTitleForced}) matching lang (id=${track.id}) [Already Active. Skipping Change.]")
+            } else {
+              Log.d(TAG, "Smart Sub: Forced track (isTitleForced=${track.isTitleForced}) lang='${track.lang}' title='${track.title}' (id=${track.id}) [Applied]")
+              setTrackSelectionId("sid", track.id)
+            }
+            return
+          }
+        }
+      }
+
+      // PASS B-DEFAULT: DEFAULT FLAG MATCHING PREFERRED LANG
+      // When no forced track matches, respect the encoder's default flag as the intended
+      // track before falling back to positional order. This handles multi-sub files where
+      // the muxer explicitly marked one track as the intended selection (e.g. a fansub
+      // release with multiple Spanish variants where the preferred one is flagged default).
+      for (prefLang in preferredLangs) {
+        for (track in subTracks) {
+          if (!track.isDefault) continue
+          if (track.hearing) continue
+          if (ignoreSubs.any { track.title.contains(it) }) continue
+          if (track.lang == prefLang || track.lang.startsWith("$prefLang-") ||
+              prefLang.startsWith("${track.lang}-") || track.lang == prefLang) {
+            if (currentSid == track.id) {
+              Log.d(TAG, "Smart Sub: Default match lang='${track.lang}' title='${track.title}' (id=${track.id}) [Already Active. Skipping Change.]")
+            } else {
+              Log.d(TAG, "Smart Sub: Default match lang='${track.lang}' title='${track.title}' (id=${track.id}) [Applied]")
+              setTrackSelectionId("sid", track.id)
+            }
+            return
+          }
+        }
       }
 
       // PASS B: CLEAN LANGUAGE MATCH
       for (prefLang in preferredLangs) {
         for (track in subTracks) {
           if (track.lang == prefLang || track.lang.startsWith(prefLang)) {
-            if (ignoreSubs.none { track.title.contains(it) } && !track.forced && !track.hearing) {
+            if (ignoreSubs.none { track.title.contains(it) } && !track.forced && !track.isTitleForced && !track.hearing) {
               if (currentSid == track.id) {
                 Log.d(TAG, "Smart Sub: Clean Match (id=${track.id}) [Already Active. Skipping Change.]")
               } else {
@@ -389,7 +429,7 @@ private suspend fun ensureSubtitleTrackSelected(tracks: List<Track>, hasState: B
       for (track in subTracks) {
         if (track.lang in unknownLangCodes) {
           if (dialogueTitleKeywords.any { track.title.contains(it) }) {
-            if (ignoreSubs.none { track.title.contains(it) } && !track.forced && !track.hearing) {
+            if (ignoreSubs.none { track.title.contains(it) } && !track.forced && !track.isTitleForced && !track.hearing) {
               if (currentSid == track.id) {
                 Log.d(TAG, "Smart Sub: Title-Name Fallback '${track.title}' (id=${track.id}) [Already Active. Skipping Change.]")
               } else {
@@ -404,7 +444,7 @@ private suspend fun ensureSubtitleTrackSelected(tracks: List<Track>, hasState: B
 
       // PASS E: SINGLE CLEAN TRACK FALLBACK
       val cleanSubTracks = subTracks.filter {
-        ignoreSubs.none { kw -> it.title.contains(kw) } && !it.forced && !it.hearing
+        ignoreSubs.none { kw -> it.title.contains(kw) } && !it.forced && !it.isTitleForced && !it.hearing
       }
       if (cleanSubTracks.size == 1) {
         val track = cleanSubTracks.first()
@@ -421,4 +461,4 @@ private suspend fun ensureSubtitleTrackSelected(tracks: List<Track>, hasState: B
       Log.e(TAG, "Subtitle selection failed", e)
     }
   }
-} 
+}
