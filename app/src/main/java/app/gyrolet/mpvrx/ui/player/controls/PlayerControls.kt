@@ -1646,11 +1646,11 @@ fun PlayerControls(
       chapter = chapters.getOrNull(currentChapter ?: 0),
       chapters = chapters.toImmutableList(),
       onSeekToChapter = { index ->
+          MPVLib.setPropertyInt("chapter", index)
           val chapterStart = chapters.getOrNull(index)?.start?.toDouble()
           if (chapterStart != null) {
-              MPVLib.command("seek", (chapterStart + 0.1).toString(), "absolute", "exact")
-          } else {
-              MPVLib.setPropertyInt("chapter", index)
+              // Seek absoluto preciso, levemente adelante del boundary
+              MPVLib.command(arrayOf("seek", (chapterStart + 0.1).toString(), "absolute", "exact"))
           }
           viewModel.unpause()
       },
