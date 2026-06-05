@@ -67,6 +67,7 @@ fun AudioTracksSheet(
           AudioTrackRow(
             title = getTrackTitle(it),
             isSelected = it.isSelected,
+            codecBadge = getTrackCodecBadge(it),
             onClick = { onSelect(it) },
           )
         }
@@ -114,6 +115,7 @@ fun AudioTracksSheet(
 fun AudioTrackRow(
   title: String,
   isSelected: Boolean,
+  codecBadge: String? = null,
   onClick: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
@@ -134,6 +136,10 @@ fun AudioTrackRow(
       title,
       fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Normal,
       fontStyle = if (isSelected) FontStyle.Italic else FontStyle.Normal,
+      modifier = Modifier.weight(1f),
     )
+    if (codecBadge != null) {
+      TrackFormatBadge(label = codecBadge)
+    }
   }
 }
