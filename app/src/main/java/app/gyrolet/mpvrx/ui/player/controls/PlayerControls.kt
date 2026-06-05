@@ -1650,7 +1650,7 @@ fun PlayerControls(
           val chapterStart = chapters.getOrNull(index)?.start?.toDouble()
           if (chapterStart != null) {
               // Seek absoluto preciso, levemente adelante del boundary
-              MPVLib.command(arrayOf("seek", (chapterStart + 0.1).toString(), "absolute", "exact"))
+              MPVLib.command("seek ${chapterStart + 0.1} absolute exact")
           }
           viewModel.unpause()
       },
