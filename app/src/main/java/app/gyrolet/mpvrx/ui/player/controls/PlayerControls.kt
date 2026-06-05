@@ -1648,7 +1648,7 @@ fun PlayerControls(
       onSeekToChapter = { index ->
           val chapterStart = chapters.getOrNull(index)?.start?.toDouble()
           if (chapterStart != null) {
-              MPVLib.command(arrayOf("seek", (chapterStart + 0.1).toString(), "absolute", "exact"))
+              MPVLib.command("seek", (chapterStart + 0.1).toString(), "absolute", "exact")
           } else {
               MPVLib.setPropertyInt("chapter", index)
           }
