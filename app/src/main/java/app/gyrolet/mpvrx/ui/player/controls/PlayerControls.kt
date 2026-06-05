@@ -1646,11 +1646,12 @@ fun PlayerControls(
       chapter = chapters.getOrNull(currentChapter ?: 0),
       chapters = chapters.toImmutableList(),
       onSeekToChapter = { index ->
+          // Primero salta via chapter (más confiable que time-pos para chapters)
+          MPVLib.setPropertyInt("chapter", index)
+          // Luego ajusta con un pequeño offset para evitar edge cases del boundary
           val chapterStart = chapters.getOrNull(index)?.start?.toDouble()
           if (chapterStart != null) {
-              MPVLib.setPropertyDouble("time-pos", chapterStart + 0.1)
-          } else {
-              MPVLib.setPropertyInt("chapter", index)
+              MPVLib.setPropertyDouble("time-pos", chapterStart + 0.5)
           }
           viewModel.unpause()
       },
