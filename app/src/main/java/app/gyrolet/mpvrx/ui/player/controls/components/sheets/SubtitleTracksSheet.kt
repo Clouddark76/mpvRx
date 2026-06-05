@@ -280,6 +280,7 @@ fun SubtitlesSheet(
                 title = getTrackTitle(track),
                 isSelected = isSubtitleSelected(track.id),
                 isExternal = track.external == true,
+                codecBadge = getTrackCodecBadge(track),
                 onToggle = { onToggleSubtitle(track.id) },
                 onRemove = { onRemoveSubtitle(track.id) },
                 onTranslate = {
@@ -333,6 +334,7 @@ fun SubtitleTrackRow(
   title: String,
   isSelected: Boolean,
   isExternal: Boolean,
+  codecBadge: String? = null,
   onToggle: () -> Unit,
   onRemove: () -> Unit,
   onTranslate: () -> Unit,
@@ -350,14 +352,15 @@ fun SubtitleTrackRow(
   ) {
     Checkbox(checked = isSelected, onCheckedChange = { onToggle() })
     Text(title, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal, modifier = Modifier.weight(1f))
-    
+    if (codecBadge != null) {
+      TrackFormatBadge(label = codecBadge)
+    }
     if (isCurrentlyTranslating) {
       androidx.compose.material3.CircularProgressIndicator(
         modifier = Modifier.size(MaterialTheme.spacing.large),
         strokeWidth = MaterialTheme.spacing.smaller,
       )
     }
-    
     if (isExternal) {
       if (translationEnabled) {
         IconButton(onClick = onTranslate) { Icon(Icons.Default.Translate, contentDescription = "Translate") }
