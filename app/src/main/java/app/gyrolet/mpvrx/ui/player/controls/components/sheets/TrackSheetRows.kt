@@ -91,10 +91,10 @@ fun getTrackTitle(track: TrackNode): String {
 
 /**
  * Returns a short human-readable format badge for a track, or null if nothing meaningful
- * can be derived. Examples: "EAC3", "FLAC", "ASS", "SRT", "AAC 5.1"
+ * can be derived. Examples: "EAC3 2.0 · 224 kb/s", "FLAC 2.0", "ASS", "SRT"
  *
  * Priority: codecDesc (human label from mpv) → codec (raw codec id, cleaned up).
- * For audio tracks, channel count is appended when available (e.g. "EAC3 2.0", "AAC 5.1").
+ * For audio tracks, channel count and bitrate are appended when available.
  */
 fun getTrackCodecBadge(track: TrackNode): String? {
   val rawCodec = track.codec?.trim()?.takeIf { it.isNotBlank() } ?: return null
@@ -121,28 +121,15 @@ fun getTrackCodecBadge(track: TrackNode): String? {
     }
   } else null
 
-  // Bitrate solo para audio, en kb/s redondeado
+  // Bitrate para audio en kb/s (enriquecido por el ViewModel vía MPV)
   val bitrateSuffix = if (track.isAudio) {
     track.demuxBitrate
       ?.takeIf { it > 0 }
-      ?.let { bps ->
-        val kbps = (bps / 1000.0).let {
-          // Redondear a múltiplos de 8 para tasas CBR estándar (224, 320, etc.)
-          // Si ya es redondo, mostrarlo directo; si no, un decimal
-          if (it % 1.0 == 0.0) "${it.toLong()} kb/s" else "${"%.0f".format(it)} kb/s"
-        }
-        " · $kbps"
-      }
-  } else null
-
-  // Bitrate para audio en kb/s
-  val bitrateSuffix = if (track.isAudio) {
-      track.demuxBitrate
-          ?.takeIf { it > 0 }
-          ?.let { " · ${it / 1000} kb/s" }
+      ?.let { " · ${it / 1000} kb/s" }
   } else null
 
   return (baseLabel + (channelSuffix ?: "") + (bitrateSuffix ?: "")).trim().takeIf { it.isNotBlank() }
+}
 
 /**
  * Maps raw mpv codec IDs to compact display labels.
