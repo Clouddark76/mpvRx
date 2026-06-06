@@ -105,9 +105,8 @@ fun getTrackCodecBadge(track: TrackNode): String? {
     val desc = track.codecDesc?.trim()
     when {
       desc.isNullOrBlank() -> cleanCodecId(rawCodec)
-      // Long verbose descriptions → use compact raw id
-      desc.length > 12 -> cleanCodecId(rawCodec)
-      else -> desc
+      desc.length > 12    -> cleanCodecId(rawCodec)
+      else                -> desc
     }
   }
 
@@ -122,7 +121,21 @@ fun getTrackCodecBadge(track: TrackNode): String? {
     }
   } else null
 
-  return (baseLabel + (channelSuffix ?: "")).trim().takeIf { it.isNotBlank() }
+  // Bitrate solo para audio, en kb/s redondeado
+  val bitrateSuffix = if (track.isAudio) {
+    track.demuxBitrate
+      ?.takeIf { it > 0 }
+      ?.let { bps ->
+        val kbps = (bps / 1000.0).let {
+          // Redondear a múltiplos de 8 para tasas CBR estándar (224, 320, etc.)
+          // Si ya es redondo, mostrarlo directo; si no, un decimal
+          if (it % 1.0 == 0.0) "${it.toLong()} kb/s" else "${"%.0f".format(it)} kb/s"
+        }
+        " · $kbps"
+      }
+  } else null
+
+  return (baseLabel + (channelSuffix ?: "") + (bitrateSuffix ?: "")).trim().takeIf { it.isNotBlank() }
 }
 
 /**
