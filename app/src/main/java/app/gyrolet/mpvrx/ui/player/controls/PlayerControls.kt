@@ -1646,11 +1646,15 @@ fun PlayerControls(
       chapter = chapters.getOrNull(currentChapter ?: 0),
       chapters = chapters.toImmutableList(),
       onSeekToChapter = { index ->
-          MPVLib.setPropertyInt("chapter", index)
+          val currentChapterIndex = MPVLib.getPropertyInt("chapter") ?: -1
           val chapterStart = chapters.getOrNull(index)?.start?.toDouble()
-          if (chapterStart != null) {
-              // Seek absoluto preciso, levemente adelante del boundary
-              MPVLib.command("seek ${chapterStart + 0.1} absolute exact")
+
+          if (currentChapterIndex == index && chapterStart != null) {
+              // Ya estamos en este chapter (boundary edge case), forzar por time-pos
+              MPVLib.setPropertyDouble("time-pos", chapterStart + 0.1)
+          } else {
+              // Salto normal entre chapters
+              MPVLib.setPropertyInt("chapter", index)
           }
           viewModel.unpause()
       },
