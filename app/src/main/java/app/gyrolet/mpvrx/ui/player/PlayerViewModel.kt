@@ -434,8 +434,20 @@ class PlayerViewModel(
   val audioTracks: StateFlow<List<TrackNode>> =
     MPVLib.propNode["track-list"]
       .map { node ->
-        node?.toObject<List<TrackNode>>(json)?.filter { it.isAudio }?.toImmutableList()
-          ?: persistentListOf()
+        // Deserialize all tracks to preserve their 0-based list position, which is
+        // required to read indexed properties like track-list/$i/demux-bitrate from MPV.
+        val allTracks = node?.toObject<List<TrackNode>>(json) ?: return@map persistentListOf()
+        allTracks
+          .mapIndexedNotNull { index, track ->
+            if (!track.isAudio) return@mapIndexedNotNull null
+            // demuxBitrate from JSON is often 0 for compressed audio (EAC3, AC3, AAC).
+            // Read directly from MPV using the track's list position for reliability.
+            val bitrate = runCatching {
+              MPVLib.getPropertyLong("track-list/$index/demux-bitrate") ?: 0L
+            }.getOrDefault(0L)
+            if (bitrate > 0L && track.demuxBitrate != bitrate) track.copy(demuxBitrate = bitrate) else track
+          }
+          .toImmutableList()
       }.stateIn(viewModelScope, SharingStarted.Lazily, persistentListOf())
 
   val chapters: StateFlow<List<dev.vivvvek.seeker.Segment>> =
