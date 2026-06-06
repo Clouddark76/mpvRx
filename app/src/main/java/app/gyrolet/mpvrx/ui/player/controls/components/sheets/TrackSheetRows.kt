@@ -135,8 +135,14 @@ fun getTrackCodecBadge(track: TrackNode): String? {
       }
   } else null
 
+  // Bitrate para audio en kb/s
+  val bitrateSuffix = if (track.isAudio) {
+      track.demuxBitrate
+          ?.takeIf { it > 0 }
+          ?.let { " · ${it / 1000} kb/s" }
+  } else null
+
   return (baseLabel + (channelSuffix ?: "") + (bitrateSuffix ?: "")).trim().takeIf { it.isNotBlank() }
-}
 
 /**
  * Maps raw mpv codec IDs to compact display labels.
