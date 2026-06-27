@@ -1646,10 +1646,14 @@ fun PlayerControls(
       chapter = chapters.getOrNull(currentChapter ?: 0),
       chapters = chapters.toImmutableList(),
       onSeekToChapter = { index ->
+          val currentChapterIndex = MPVLib.getPropertyInt("chapter") ?: -1
           val chapterStart = chapters.getOrNull(index)?.start?.toDouble()
-          if (chapterStart != null) {
+
+          if (currentChapterIndex == index && chapterStart != null) {
+              // Ya estamos en este chapter (boundary edge case), forzar por time-pos
               MPVLib.setPropertyDouble("time-pos", chapterStart + 0.1)
           } else {
+              // Salto normal entre chapters
               MPVLib.setPropertyInt("chapter", index)
           }
           viewModel.unpause()
@@ -2140,4 +2144,3 @@ private fun OutlinedText(
     )
   }
 }
-
