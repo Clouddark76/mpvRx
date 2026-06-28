@@ -1364,6 +1364,18 @@ class PlayerActivity :
     if (!MediaPlaybackService.isRunning()) return
 
     Log.d(TAG, "Stopping detached background playback before fresh player launch")
+    // MPVLib is a process-wide singleton shared between this (freshly created) Activity and
+    // the still-running MediaPlaybackService instance. Force the service to synchronously
+    // persist the outgoing video's state BEFORE we touch that shared mpv session below
+    // (pause/quit/destroy), and before onCreate() goes on to loadfile() the new video on it.
+    // Without this explicit flush, the service's own MPV_EVENT_SHUTDOWN-triggered save runs
+    // on a separate, unsynchronized coroutine that can lose the race against the new file's
+    // loadfile(), corrupting which video's position/cache ends up persisted.
+    runCatching {
+      MediaPlaybackService.flushPendingPlaybackStateSave()
+    }.onFailure { e ->
+      Log.e(TAG, "Error flushing detached playback state before teardown", e)
+    }
     runCatching {
       stopService(Intent(this, MediaPlaybackService::class.java))
     }.onFailure { e ->
