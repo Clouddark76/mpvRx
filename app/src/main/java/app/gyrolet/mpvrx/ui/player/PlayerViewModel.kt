@@ -975,19 +975,26 @@ class PlayerViewModel(
     seekThumbnailCache.evictAll()
     warmedSeekThumbnailSource = null
     runCatching { MPVLib.clearThumbnailCache() }
-    // Reset position/cache state for the incoming file. mpv's "time-pos"/"demuxer-cache-time"
-    // property observers (see init {} below) only emit when mpv itself reports a fresh value;
-    // if the new file is slow to open (network stream, 404, timeout) those StateFlows would
-    // otherwise keep showing the OUTGOING video's last known position/cache value. Any save
+    // Reset position/duration/cache state for the incoming file. mpv's
+    // "time-pos"/"duration"/"demuxer-cache-time" property observers (see init {} below) only
+    // emit when mpv itself reports a fresh value; if the new file is slow to open (network
+    // stream, 404, timeout) those StateFlows would otherwise keep showing the OUTGOING video's
+    // last known position/duration/cache value — e.g. the seekbar's total duration label still
+    // showing the previous video's runtime until the new one actually starts playing. Any save
     // (onDestroy, onPause, etc.) that falls back to viewModel.pos while mpv's own time-pos
-    // property is unavailable would then persist the wrong video's position under the new
+    // property is unavailable would also persist the wrong video's position under the new
     // file's mediaIdentifier.
     _pos.value = null
     _precisePosition.value = 0f
-    // PlayerControls.kt reads demuxer-cache-time directly off MPVLib.propDouble, which is also
-    // a StateFlow that only updates on a real mpv emission. Force-emit 0.0 so the readahead bar
-    // doesn't keep showing the outgoing video's cached range while the new file is still
-    // connecting (the exact "readahead jumps to a stale value" symptom).
+    _duration.value = null
+    _preciseDuration.value = 0f
+    // PlayerControls.kt's total-duration label reads MPVLib.propInt["duration"] directly (not
+    // viewModel.duration above), and demuxer-cache-time / readahead reads MPVLib.propDouble
+    // directly too — both are StateFlows that only update on a real mpv emission. Force-emit
+    // neutral values so neither keeps showing the OUTGOING video's duration/cached range while
+    // the new file is still connecting (the "I still see the previous video's duration until
+    // the new one starts playing" symptom).
+    runCatching { MPVLib.propInt.emit("duration", 0) }
     runCatching { MPVLib.propDouble.emit("demuxer-cache-time", 0.0) }
     _videoOpenAnimationState.update {
       it.copy(
