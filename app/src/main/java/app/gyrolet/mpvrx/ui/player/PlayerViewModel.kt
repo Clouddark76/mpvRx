@@ -975,6 +975,20 @@ class PlayerViewModel(
     seekThumbnailCache.evictAll()
     warmedSeekThumbnailSource = null
     runCatching { MPVLib.clearThumbnailCache() }
+    // Reset position/cache state for the incoming file. mpv's "time-pos"/"demuxer-cache-time"
+    // property observers (see init {} below) only emit when mpv itself reports a fresh value;
+    // if the new file is slow to open (network stream, 404, timeout) those StateFlows would
+    // otherwise keep showing the OUTGOING video's last known position/cache value. Any save
+    // (onDestroy, onPause, etc.) that falls back to viewModel.pos while mpv's own time-pos
+    // property is unavailable would then persist the wrong video's position under the new
+    // file's mediaIdentifier.
+    _pos.value = null
+    _precisePosition.value = 0f
+    // PlayerControls.kt reads demuxer-cache-time directly off MPVLib.propDouble, which is also
+    // a StateFlow that only updates on a real mpv emission. Force-emit 0.0 so the readahead bar
+    // doesn't keep showing the outgoing video's cached range while the new file is still
+    // connecting (the exact "readahead jumps to a stale value" symptom).
+    runCatching { MPVLib.propDouble.emit("demuxer-cache-time", 0.0) }
     _videoOpenAnimationState.update {
       it.copy(
         loadToken = it.loadToken + 1,
