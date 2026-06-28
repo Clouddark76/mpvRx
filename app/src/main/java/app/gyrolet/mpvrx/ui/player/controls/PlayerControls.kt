@@ -1360,7 +1360,19 @@ fun PlayerControls(
             seekbarStyle = seekbarStyle,
             loopStart = abLoopA?.toFloat(),
             loopEnd = abLoopB?.toFloat(),
-            bufferDuration = if (showBufferedRange && !isPlayerSeeking) demuxerCacheTime?.toFloat() else null,
+            // demuxer-cache-time reports the ABSOLUTE timestamp up to which the
+            // demuxer has read/downloaded data (e.g. "95" if 95s of the file are
+            // cached), not how much buffer sits ahead of the current playback
+            // position. Seekbar draws bufferDuration as relative ahead-of-playhead
+            // duration (see drawn bufferPx = playedPx + bufferDuration/duration),
+            // so it must be converted here, otherwise the buffered range jumps far
+            // ahead of what's actually cached.
+            bufferDuration = if (showBufferedRange && !isPlayerSeeking) {
+              demuxerCacheTime?.toFloat()?.let { cacheAbsoluteTime ->
+                val currentPos = precisePosition.takeIf { it > 0f } ?: position?.toFloat() ?: 0f
+                (cacheAbsoluteTime - currentPos).coerceAtLeast(0f)
+              }
+            } else null,
             isPortrait = isPortrait,
           )
         }
