@@ -69,7 +69,25 @@ class MediaPlaybackService :
     @Volatile
     private var isServiceRunning = false
 
+    // Live instance reference, set in onCreate()/cleared in onDestroy(). MPVLib is a process-wide
+    // singleton shared between this service and any PlayerActivity instance; when a fresh
+    // PlayerActivity tears down a detached background session before loading a new file, it must
+    // be able to force-flush THIS service's pending playback-state save synchronously first —
+    // otherwise the new file's loadfile()/MPVLib.quit() can race the service's own
+    // MPV_EVENT_SHUTDOWN-triggered save, corrupting which video's position/cache gets persisted.
+    @Volatile
+    private var activeInstance: MediaPlaybackService? = null
+
     fun isRunning(): Boolean = isServiceRunning
+
+    /**
+     * Forces the currently running background session (if any) to persist its playback state
+     * synchronously. Safe to call even if no instance is running. Must be called BEFORE any
+     * MPVLib pause/quit/destroy call that targets the same (shared, singleton) mpv session.
+     */
+    fun flushPendingPlaybackStateSave() {
+      activeInstance?.savePlaybackStateBlocking()
+    }
 
     fun createNotificationChannel(context: Context) {
       val channel =
@@ -127,6 +145,7 @@ class MediaPlaybackService :
     Log.d(TAG, "Service created")
 
     isServiceRunning = true
+    activeInstance = this
 
     // Ensure notification channel exists before starting foreground service
     createNotificationChannel(this)
@@ -813,6 +832,7 @@ class MediaPlaybackService :
       Log.d(TAG, "Service destroyed")
 
       isServiceRunning = false
+      activeInstance = null
       savePlaybackStateBlocking()
 
       try {
