@@ -2995,12 +2995,6 @@ class PlayerActivity :
 
   private fun capturePlaybackStateSnapshot(mediaTitle: String): PlaybackStateSnapshot? {
     if (mediaIdentifier.isBlank()) return null
-    // Don't snapshot mid-transition: isReady is false from the moment loadfile() is dispatched
-    // for a new uri until MPV_EVENT_FILE_LOADED actually confirms it. mediaIdentifier may already
-    // point at the incoming video while mpv's time-pos/cache properties still reflect the outgoing
-    // one (this gap can last seconds over slow network streams) — saving here would persist the
-    // outgoing video's position/cache under the incoming video's identifier.
-    if (!isReady) return null
 
     return PlaybackStateSnapshot(
       mediaIdentifier = mediaIdentifier,
