@@ -141,6 +141,14 @@ class PlayerActivity :
 
    /**
  * Decodes the filename portion of localhost URLs to handle URL-encoded characters.
+ *
+ * IMPORTANT: this must stay close to a plain decode, not a full re-encode.
+ * mpv uses this exact path string to match neighboring external subtitle/audio
+ * files on disk (e.g. "Title - 01.mkv" -> "Title - 01.ass"); if the filename
+ * here is percent-encoded (spaces as %20, brackets as %5B/%5D, etc.) that
+ * matching breaks because it no longer matches the real on-disk filename.
+ * Only '#' and '?' are re-escaped since those have structural meaning in a
+ * URL (fragment / query start) and would otherwise truncate the path.
  */ 
    private fun decodeLocalhostUrl(url: String): String {
       // Only process localhost/127.0.0.1 URLs
@@ -2975,6 +2983,12 @@ class PlayerActivity :
 
   private fun capturePlaybackStateSnapshot(mediaTitle: String): PlaybackStateSnapshot? {
     if (mediaIdentifier.isBlank()) return null
+    // Don't snapshot mid-transition: isReady is false from the moment loadfile() is dispatched
+    // for a new uri until MPV_EVENT_FILE_LOADED actually confirms it. mediaIdentifier may already
+    // point at the incoming video while mpv's time-pos/cache properties still reflect the outgoing
+    // one (this gap can last seconds over slow network streams) — saving here would persist the
+    // outgoing video's position/cache under the incoming video's identifier.
+    if (!isReady) return null
 
     return PlaybackStateSnapshot(
       mediaIdentifier = mediaIdentifier,
@@ -3327,6 +3341,20 @@ class PlayerActivity :
       if (path != null) {
         generatePlaylistFromFolder(path)
       }
+    }
+
+    // Save the OUTGOING video's playback state before overwriting fileName/mediaIdentifier
+    // below. mpv's loadfile() for the new uri is dispatched asynchronously further down and,
+    // especially over slow/network streams, can take seconds to actually replace the current
+    // file in mpv's core. Until it does, MPVLib.getPropertyDouble("time-pos") (and the cache
+    // properties) still reflect the OLD video. If anything triggers a save in that window (e.g.
+    // onPause when the app goes to background while the new stream is still connecting), we must
+    // not have already overwritten mediaIdentifier to the NEW video's id, or that stale mpv state
+    // gets persisted under the wrong identifier — the exact "position/cache carried over to the
+    // next video" symptom. Mirrors the same save-before-switch order already used in
+    // loadPlaylistItemInternal().
+    if (fileName.isNotBlank()) {
+      saveVideoPlaybackState(fileName, immediate = true)
     }
 
     // Extract the new fileName before loading the file
