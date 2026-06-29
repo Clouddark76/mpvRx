@@ -4038,17 +4038,39 @@ class PlayerActivity :
     }
   }
 
+// Tracks the chapter index we just navigated to and when, so that rapid repeated
+  // next/previous taps use this as the reference point instead of viewModel.pos — which lags
+  // behind for a few hundred ms after each seekTo() call (it's dispatched asynchronously on
+  // Dispatchers.IO, and mpv itself takes time to actually seek and emit the new time-pos).
+  // Without this, a quick second tap recomputes "next/previous" against the STALE pre-seek
+  // position, which can land you back before the chapter you just jumped to.
+  private var lastChapterSeekIndex: Int? = null
+  private var lastChapterSeekAtMs: Long = 0L
+  private val CHAPTER_SEEK_DEBOUNCE_WINDOW_MS = 1500L
+
 /**
    * Navega al siguiente capítulo. Retorna true si había capítulo disponible.
    */
   private fun seekToNextChapter(): Boolean {
       val chapters = viewModel.chapters.value
       if (chapters.isEmpty()) return false
-      val currentPos = (viewModel.pos ?: 0).toDouble()
-      val nextIndex = chapters.indexOfFirst { it.start > currentPos + 0.5 }
-      if (nextIndex == -1) return false
+
+      val now = System.currentTimeMillis()
+      val withinDebounceWindow = (now - lastChapterSeekAtMs) < CHAPTER_SEEK_DEBOUNCE_WINDOW_MS
+      val referenceIndex = lastChapterSeekIndex.takeIf { withinDebounceWindow }
+
+      val nextIndex = if (referenceIndex != null) {
+        // Rapid repeated tap: advance relative to where we just jumped, not viewModel.pos.
+        (referenceIndex + 1).takeIf { it < chapters.size } ?: return false
+      } else {
+        val currentPos = (viewModel.pos ?: 0).toDouble()
+        chapters.indexOfFirst { it.start > currentPos + 0.5 }.takeIf { it != -1 } ?: return false
+      }
+
       val next = chapters[nextIndex]
-      viewModel.seekTo(next.start.toInt())
+      viewModel.seekTo(next.start.toInt(), exact = true)
+      lastChapterSeekIndex = nextIndex
+      lastChapterSeekAtMs = now
       // Mostrar nombre del capítulo (Segment usa 'name' como label)
       val chapterName = next.name.ifBlank { "Chapter ${nextIndex + 1}" }
       viewModel.playerUpdate.value = PlayerUpdates.ShowText("▶ $chapterName")
@@ -4061,11 +4083,23 @@ class PlayerActivity :
   private fun seekToPreviousChapter(): Boolean {
       val chapters = viewModel.chapters.value
       if (chapters.isEmpty()) return false
-      val currentPos = (viewModel.pos ?: 0).toDouble()
-      val prevIndex = chapters.indexOfLast { it.start < currentPos - 3.0 }
-      if (prevIndex == -1) return false
+
+      val now = System.currentTimeMillis()
+      val withinDebounceWindow = (now - lastChapterSeekAtMs) < CHAPTER_SEEK_DEBOUNCE_WINDOW_MS
+      val referenceIndex = lastChapterSeekIndex.takeIf { withinDebounceWindow }
+
+      val prevIndex = if (referenceIndex != null) {
+        // Rapid repeated tap: go back relative to where we just jumped, not viewModel.pos.
+        (referenceIndex - 1).takeIf { it >= 0 } ?: return false
+      } else {
+        val currentPos = (viewModel.pos ?: 0).toDouble()
+        chapters.indexOfLast { it.start < currentPos - 3.0 }.takeIf { it != -1 } ?: return false
+      }
+
       val prev = chapters[prevIndex]
-      viewModel.seekTo(prev.start.toInt())
+      viewModel.seekTo(prev.start.toInt(), exact = true)
+      lastChapterSeekIndex = prevIndex
+      lastChapterSeekAtMs = now
       val chapterName = prev.name.ifBlank { "Chapter ${prevIndex + 1}" }
       viewModel.playerUpdate.value = PlayerUpdates.ShowText("◀ $chapterName")
       return true
