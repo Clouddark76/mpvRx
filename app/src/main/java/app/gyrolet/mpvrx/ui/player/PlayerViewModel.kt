@@ -3050,7 +3050,7 @@ class PlayerViewModel(
     coalesceSeek(offset)
   }
 
-  fun seekTo(position: Int) {
+  fun seekTo(position: Int, exact: Boolean = false) {
     viewModelScope.launch(Dispatchers.IO) {
       val maxDuration = MPVLib.getPropertyInt("duration") ?: 0
       var clampedPosition = position.coerceIn(0, maxDuration)
@@ -3070,8 +3070,15 @@ class PlayerViewModel(
       seekCoalesceJob?.cancel()
       pendingSeekOffset = 0
 
-      // Use precise seeking for videos shorter than 2 minutes (120 seconds) or if preference is enabled
-      val shouldUsePreciseSeeking = playerPreferences.usePreciseSeeking.get() || maxDuration < 120
+      // Use precise seeking for videos shorter than 2 minutes (120 seconds), if the caller
+      // explicitly requested exact (e.g. chapter navigation — see seekToNextChapter), or if
+      // the preference is enabled. "+keyframes" seeks snap to the nearest keyframe at or
+      // BEFORE the requested position (mpv's default bias), which for chapter boundaries that
+      // don't land exactly on a keyframe means landing back inside the PREVIOUS chapter instead
+      // of the start of the target one — exactly the "next chapter snaps back to the end of the
+      // current one" symptom. "+exact" decodes forward from the nearest keyframe to the
+      // requested frame, costing a bit of seek latency but landing exactly where requested.
+      val shouldUsePreciseSeeking = exact || playerPreferences.usePreciseSeeking.get() || maxDuration < 120
       val seekMode = if (shouldUsePreciseSeeking) "absolute+exact" else "absolute+keyframes"
       MPVLib.command("seek", clampedPosition.toString(), seekMode)
     }
