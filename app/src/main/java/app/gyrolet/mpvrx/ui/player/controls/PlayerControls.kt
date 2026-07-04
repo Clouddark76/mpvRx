@@ -234,6 +234,7 @@ fun PlayerControls(
   var isSeeking by remember { mutableStateOf(false) }
   val mpvSeeking by MPVLib.propBoolean["seeking"].collectAsState()
   val isPlayerSeeking = isSeeking || (mpvSeeking ?: false)
+  var lastKnownBufferDuration by remember { mutableStateOf<Float?>(null) }
   var resetControlsTimestamp by remember { mutableStateOf(0L) }
   val seekText = seekState.text
   val currentChapter by MPVLib.propInt["chapter"].collectAsState()
@@ -1367,10 +1368,22 @@ fun PlayerControls(
             // duration (see drawn bufferPx = playedPx + bufferDuration/duration),
             // so it must be converted here, otherwise the buffered range jumps far
             // ahead of what's actually cached.
-            bufferDuration = if (showBufferedRange && !isPlayerSeeking) {
-              demuxerCacheTime?.toFloat()?.let { cacheAbsoluteTime ->
-                val currentPos = precisePosition.takeIf { it > 0f } ?: position?.toFloat() ?: 0f
-                (cacheAbsoluteTime - currentPos).coerceAtLeast(0f)
+            //
+            // While a seek is in transit (isPlayerSeeking), demuxer-cache-time/precisePosition
+            // can briefly report stale/inconsistent values — previously this branch fell back
+            // to `null`, which made the readahead bar visibly disappear and reappear on every
+            // seek (the reported "flicker"). Freezing the last known-good value during the
+            // transit window avoids that: the bar just holds still instead of blinking out.
+            bufferDuration = if (showBufferedRange) {
+              if (!isPlayerSeeking) {
+                val computed = demuxerCacheTime?.toFloat()?.let { cacheAbsoluteTime ->
+                  val currentPos = precisePosition.takeIf { it > 0f } ?: position?.toFloat() ?: 0f
+                  (cacheAbsoluteTime - currentPos).coerceAtLeast(0f)
+                }
+                lastKnownBufferDuration = computed
+                computed
+              } else {
+                lastKnownBufferDuration
               }
             } else null,
             isPortrait = isPortrait,
