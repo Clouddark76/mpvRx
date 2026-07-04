@@ -3080,7 +3080,11 @@ class PlayerViewModel(
       // requested frame, costing a bit of seek latency but landing exactly where requested.
       val shouldUsePreciseSeeking = exact || playerPreferences.usePreciseSeeking.get() || maxDuration < 120
       val seekMode = if (shouldUsePreciseSeeking) "absolute+exact" else "absolute+keyframes"
+      Log.d("SeekDebug", "seekTo: requested=$clampedPosition mode=$seekMode exact=$exact")
       MPVLib.command("seek", clampedPosition.toString(), seekMode)
+      delay(150)
+      val actualPos = MPVLib.getPropertyDouble("time-pos")
+      Log.d("SeekDebug", "seekTo: requested=$clampedPosition actualAfter150ms=$actualPos")
     }
   }
 
@@ -3101,10 +3105,11 @@ class PlayerViewModel(
               // If seeking past the end, force seek to 100% absolute to ensure EOF is triggered
               MPVLib.command("seek", "100", "absolute-percent+exact")
           } else {
-              // Use precise seeking for videos shorter than 2 minutes (120 seconds) or if preference is enabled
-              val shouldUsePreciseSeeking = playerPreferences.usePreciseSeeking.get() || duration < 120
-              val seekMode = if (shouldUsePreciseSeeking) "relative+exact" else "relative+keyframes"
-              MPVLib.command("seek", toApply.toString(), seekMode)
+              // Always use exact seeking here: unlike a live scrubbing drag, a +/-N second tap
+              // is a single discrete jump with no continuous feedback loop that needs speed, so
+              // there's no reason to accept "keyframes" mode's bias toward the nearest PRECEDING
+              // keyframe (which made forward taps feel like they landed a few seconds short/back).
+              MPVLib.command("seek", toApply.toString(), "relative+exact")
           }
         }
       }
