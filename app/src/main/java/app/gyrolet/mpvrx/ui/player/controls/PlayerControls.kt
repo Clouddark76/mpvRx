@@ -1346,7 +1346,7 @@ fun PlayerControls(
               if (useThumbFastSeekPreview) {
                 viewModel.hideSeekThumbnailPreview()
               }
-              viewModel.seekTo(targetPosition.toInt(), exact = true)
+              viewModel.seekTo(targetPosition.toInt())
               viewModel.showControls()
             },
             timersInverted = Pair(false, invertDuration),
@@ -2169,4 +2169,5 @@ private fun OutlinedText(
       style = style
     )
   }
+}  }
 }
