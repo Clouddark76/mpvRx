@@ -1387,6 +1387,7 @@ fun PlayerControls(
               }
             } else null,
             isPortrait = isPortrait,
+            isSeeking = isPlayerSeeking,
           )
         }
 
