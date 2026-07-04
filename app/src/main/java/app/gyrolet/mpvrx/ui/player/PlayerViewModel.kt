@@ -2853,7 +2853,7 @@ class PlayerViewModel(
       }
 
     val source = resolveSeekThumbnailSource()
-    if (source.isNullOrBlank()) {
+    if (source.isNullOrBlank() || isMpvCurrentlySeeking()) {
       _seekThumbnailPreview.update {
         it.copy(
           visible = true,
@@ -3111,11 +3111,14 @@ class PlayerViewModel(
               // If seeking past the end, force seek to 100% absolute to ensure EOF is triggered
               MPVLib.command("seek", "100", "absolute-percent+exact")
           } else {
-              // Always use exact seeking here: unlike a live scrubbing drag, a +/-N second tap
-              // is a single discrete jump with no continuous feedback loop that needs speed, so
-              // there's no reason to accept "keyframes" mode's bias toward the nearest PRECEDING
-              // keyframe (which made forward taps feel like they landed a few seconds short/back).
-              MPVLib.command("seek", toApply.toString(), "relative+exact")
+              // Use precise seeking for videos shorter than 2 minutes (120 seconds) or if
+              // preference is enabled. Reverted from always-exact: logcat evidence (compared
+              // against a pre-change build) showed "+exact" was responsible for mpv itself
+              // taking 700ms-1.2s+ to complete some seeks (measured between mpv's own
+              // "seek"/"playback-restart" events), vs consistently <150ms with "+keyframes".
+              val shouldUsePreciseSeeking = playerPreferences.usePreciseSeeking.get() || duration < 120
+              val seekMode = if (shouldUsePreciseSeeking) "relative+exact" else "relative+keyframes"
+              MPVLib.command("seek", toApply.toString(), seekMode)
           }
         }
       }
