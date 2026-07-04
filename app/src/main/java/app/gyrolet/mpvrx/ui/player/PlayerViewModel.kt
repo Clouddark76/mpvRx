@@ -3080,11 +3080,7 @@ class PlayerViewModel(
       // requested frame, costing a bit of seek latency but landing exactly where requested.
       val shouldUsePreciseSeeking = exact || playerPreferences.usePreciseSeeking.get() || maxDuration < 120
       val seekMode = if (shouldUsePreciseSeeking) "absolute+exact" else "absolute+keyframes"
-      Log.d("SeekDebug", "seekTo: requested=$clampedPosition mode=$seekMode exact=$exact")
       MPVLib.command("seek", clampedPosition.toString(), seekMode)
-      delay(150)
-      val actualPos = MPVLib.getPropertyDouble("time-pos")
-      Log.d("SeekDebug", "seekTo: requested=$clampedPosition actualAfter150ms=$actualPos")
     }
   }
 
