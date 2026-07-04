@@ -1345,7 +1345,7 @@ fun PlayerControls(
               if (useThumbFastSeekPreview) {
                 viewModel.hideSeekThumbnailPreview()
               }
-              viewModel.seekTo(targetPosition.toInt())
+              viewModel.seekTo(targetPosition.toInt(), exact = true)
               viewModel.showControls()
             },
             timersInverted = Pair(false, invertDuration),
