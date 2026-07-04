@@ -2169,5 +2169,5 @@ private fun OutlinedText(
       style = style
     )
   }
-}  }
-}
+} 
+
