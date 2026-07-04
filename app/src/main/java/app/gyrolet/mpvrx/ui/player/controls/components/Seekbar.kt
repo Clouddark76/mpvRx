@@ -105,6 +105,7 @@ fun SeekbarWithTimers(
   loopEnd: Float? = null,
   bufferDuration: Float? = null,
   isPortrait: Boolean = false,
+  isSeeking: Boolean = false,
   modifier: Modifier = Modifier,
 ) {
   val clickEvent = LocalPlayerButtonsClickEvent.current
@@ -115,17 +116,27 @@ fun SeekbarWithTimers(
   val animatedPosition = remember { Animatable(position) }
   val scope = rememberCoroutineScope()
 
-  LaunchedEffect(position, isUserInteracting) {
+  LaunchedEffect(position, isUserInteracting, isSeeking) {
     if (!isUserInteracting && position != animatedPosition.value) {
       scope.launch {
-        animatedPosition.animateTo(
-          targetValue = position,
-          animationSpec =
-            spring(
-              dampingRatio = AppMotion.Spatial.Standard.dampingRatio,
-              stiffness = AppMotion.Spatial.Standard.stiffness,
-            ),
-        )
+        // A seek (explicit or still-settling in mpv) is a discrete jump, not continuous
+        // playback progress — snap instantly instead of letting the spring visibly travel
+        // from the old position to the new one (which could also overshoot and appear to
+        // "go back" before correcting). Also snap on any large jump (e.g. chapter skip) even
+        // if isSeeking already flipped back to false by the time this recomposes.
+        val isLargeJump = kotlin.math.abs(position - animatedPosition.value) > 3f
+        if (isSeeking || isLargeJump) {
+          animatedPosition.snapTo(position)
+        } else {
+          animatedPosition.animateTo(
+            targetValue = position,
+            animationSpec =
+              spring(
+                dampingRatio = AppMotion.Spatial.Standard.dampingRatio,
+                stiffness = AppMotion.Spatial.Standard.stiffness,
+              ),
+          )
+        }
       }
     }
   }
