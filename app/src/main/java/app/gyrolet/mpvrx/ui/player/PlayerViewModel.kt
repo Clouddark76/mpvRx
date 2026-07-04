@@ -410,6 +410,16 @@ class PlayerViewModel(
   private val _duration = MutableStateFlow<Int?>(null)
   val duration: Int? get() = _duration.value
 
+  // Mirrors mpv's own "seeking" property (already used by PlayerControls.kt's readahead bar
+  // via mpvSeeking) so the position-polling loop below can apply the same guard. While a seek
+  // is in transit, mpv's own time-pos can briefly report a stale/inconsistent value — polling
+  // it during that exact window and writing it to _precisePosition/_pos is what caused the
+  // seekbar/timer to visibly jump back to the old position before snapping forward to the
+  // requested one, regardless of whether keyframes or exact seeking was used (the transit
+  // window exists either way).
+  private val mpvSeekingFlow = MPVLib.propBoolean["seeking"]
+  private fun isMpvCurrentlySeeking(): Boolean = mpvSeekingFlow.value ?: false
+
   private val _volumeBoostCap = MutableStateFlow<Int?>(null)
   private val volumeBoostCap: Int? get() = _volumeBoostCap.value
 
@@ -739,7 +749,7 @@ class PlayerViewModel(
         }
         runCatching {
           val time = MPVLib.getPropertyDouble("time-pos")
-          if (time != null) {
+          if (time != null && !isMpvCurrentlySeeking()) {
             _precisePosition.value = time.toFloat()
             maybeAutoSkipIntro(time)
           }
@@ -909,7 +919,7 @@ class PlayerViewModel(
     mpvStateCollectorsJob =
       viewModelScope.launch(playbackStateDispatcher) {
         launch { MPVLib.propBoolean["pause"].collect { _paused.value = it } }
-        launch { MPVLib.propInt["time-pos"].collect { _pos.value = it } }
+        launch { MPVLib.propInt["time-pos"].collect { if (!isMpvCurrentlySeeking()) _pos.value = it } }
         launch { MPVLib.propInt["duration"].collect { _duration.value = it } }
         launch { MPVLib.propInt["volume-max"].collect { _volumeBoostCap.value = it } }
       }
